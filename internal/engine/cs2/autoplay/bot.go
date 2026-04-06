@@ -612,25 +612,44 @@ func (b *CS2Bot) releaseAll() {
 func (b *CS2Bot) ensureFocus(ctx context.Context) {
 	log.Printf("[CS2Bot:%d] Ensuring game focus...", b.display)
 
-	// Warp mouse to center of the 1280x720 Xvfb screen (absolute)
+	// Dismiss any Steam dialogs ("Only one instance", errors, etc.)
+	// These have an OK/Close button — Enter or Space will close them.
+	for i := 0; i < 3; i++ {
+		b.input.KeyTap(KeyReturn) // hits "OK" on any focused dialog
+		if !sleepCtx(ctx, 400*time.Millisecond) {
+			return
+		}
+		b.input.KeyTap(KeySpace) // alternative for some dialogs
+		if !sleepCtx(ctx, 400*time.Millisecond) {
+			return
+		}
+	}
+
+	// Warp mouse to center of the 1280x720 Xvfb screen
 	b.input.WarpAbsolute(640, 360)
 	if !sleepCtx(ctx, 300*time.Millisecond) {
 		return
 	}
 
-	// Click to focus the game window
+	// Click to focus whatever window is under cursor
 	b.input.Click(1)
 	if !sleepCtx(ctx, 600*time.Millisecond) {
 		return
 	}
 
-	// Escape to close any overlay (Steam notifications, MOTD)
+	// Escape to close any overlay (Steam notifications, MOTD, main menu)
 	b.input.KeyTap(KeyEscape)
-	if !sleepCtx(ctx, 600*time.Millisecond) {
+	if !sleepCtx(ctx, 500*time.Millisecond) {
 		return
 	}
 
-	// Click center again to capture the mouse
+	// Enter again in case there was a dialog behind the first one
+	b.input.KeyTap(KeyReturn)
+	if !sleepCtx(ctx, 400*time.Millisecond) {
+		return
+	}
+
+	// Click center to capture mouse into the game
 	b.input.WarpAbsolute(640, 360)
 	if !sleepCtx(ctx, 200*time.Millisecond) {
 		return
@@ -640,13 +659,13 @@ func (b *CS2Bot) ensureFocus(ctx context.Context) {
 		return
 	}
 
-	// Escape once more (dismiss menu if we accidentally opened it)
+	// Escape (dismiss game menu if it opened)
 	b.input.KeyTap(KeyEscape)
 	if !sleepCtx(ctx, 400*time.Millisecond) {
 		return
 	}
 
-	// Warp back to center and click to lock cursor into game
+	// Final click — lock cursor into game
 	b.input.WarpAbsolute(640, 360)
 	if !sleepCtx(ctx, 200*time.Millisecond) {
 		return
@@ -656,9 +675,9 @@ func (b *CS2Bot) ensureFocus(ctx context.Context) {
 		return
 	}
 
-	// Quick W tap to verify game is receiving input
+	// Quick W press to verify game accepts input
 	b.input.KeyDown(KeyW)
-	if !sleepCtx(ctx, 200*time.Millisecond) {
+	if !sleepCtx(ctx, 300*time.Millisecond) {
 		return
 	}
 	b.input.KeyUp(KeyW)

@@ -234,18 +234,39 @@ STEAM_LOCAL="$HOME/.local/share/Steam"
 mkdir -p "$STEAM_LOCAL"
 
 # Copy steam.sh so STEAMROOT resolves to shadow dir; symlink everything else
-# config is special: create a real dir so htmlcache gets its own SingletonLock
+# config and steamapps are special — handled separately below
 for item in "$STEAM_REAL"/*; do
     name=$(basename "$item")
     [ "$name" = "ubuntu12_32" ] && continue
     [ "$name" = "ubuntu12_64" ] && continue
     [ "$name" = "config" ] && continue
+    [ "$name" = "steamapps" ] && continue
     if [ "$name" = "steam.sh" ]; then
         cp "$item" "$STEAM_LOCAL/$name"
         chmod +x "$STEAM_LOCAL/$name"
     else
         ln -sfn "$item" "$STEAM_LOCAL/$name" 2>/dev/null
     fi
+done
+
+# Shadow steamapps: copy appmanifest files (own game state), symlink the rest.
+# This prevents "Only one instance of the game can be running" errors caused by
+# a shared appmanifest that still has StateFlags set to "running" from the host.
+mkdir -p "$STEAM_LOCAL/steamapps"
+for item in "$STEAM_REAL/steamapps"/*; do
+    name=$(basename "$item")
+    case "$name" in
+        appmanifest_*.acf|libraryfolders.vdf)
+            cp "$item" "$STEAM_LOCAL/steamapps/$name" 2>/dev/null
+            ;;
+        *)
+            ln -sfn "$item" "$STEAM_LOCAL/steamapps/$name" 2>/dev/null
+            ;;
+    esac
+done
+# Reset all game StateFlags to 4 ("fully installed, not running")
+for m in "$STEAM_LOCAL/steamapps"/appmanifest_*.acf; do
+    [ -f "$m" ] && sed -i 's/"StateFlags"[[:space:]]*"[0-9]*"/"StateFlags"\t\t"4"/' "$m"
 done
 
 # Shadow config dir: own htmlcache (fresh, no stale SingletonLock), symlink the rest
@@ -313,6 +334,13 @@ mkdir -p "$HOME/bin"
 printf '#!/bin/sh\nexit 0\n' > "$HOME/bin/zenity"
 chmod +x "$HOME/bin/zenity"
 export PATH="$HOME/bin:$PATH"
+
+# Kill stale game processes from a previous sandbox run
+pkill -f 'cs2$' 2>/dev/null || true
+pkill -f 'dota2$' 2>/dev/null || true
+# Remove Source 2 engine lock files
+rm -f /tmp/source_engine_*.lock 2>/dev/null
+rm -f /tmp/.com.valve.source* 2>/dev/null
 
 exec "$STEAM_LOCAL/steam.sh" {args}
 "#,

@@ -29,15 +29,16 @@ function connectGlobal(path: string) {
   const ws = new WebSocket(url);
 
   ws.onopen = () => {
+    if (globalWs !== ws) return;
     globalConnected = true;
     notifyConnListeners();
   };
 
   ws.onclose = () => {
-    const wasConnected = globalConnected;
+    if (globalWs !== ws) return;
     globalConnected = false;
     globalWs = null;
-    if (wasConnected) notifyConnListeners();
+    notifyConnListeners();
 
     if (!destroyed && refCount > 0) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
@@ -63,9 +64,10 @@ function destroyGlobal() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  globalWs?.close();
+  const ws = globalWs;
   globalWs = null;
   globalConnected = false;
+  ws?.close();
 }
 
 function getConnected() {

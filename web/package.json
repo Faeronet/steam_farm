@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@novnc/novnc": "^1.6.0",
     "@tanstack/react-query": "*",
     "@tanstack/react-table": "*",
     "clsx": "*",

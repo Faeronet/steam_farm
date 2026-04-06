@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Monitor, Play, Square, RefreshCw, Cpu, HardDrive } from 'lucide-react';
+import VncViewer from '@/components/VncViewer';
 
 interface ContainerInfo {
   ID: string;
@@ -200,18 +201,18 @@ export default function SandboxMonitor() {
           </h3>
           {selectedVNC ? (
             <div className="space-y-2">
-              <div className="bg-bg-primary rounded-lg border border-border-default aspect-[4/3] flex items-center justify-center overflow-hidden">
-                <iframe
-                  src={`http://127.0.0.1:${selectedVNC + 100}`}
-                  className="w-full h-full border-0"
-                  title="noVNC Preview"
+              <div className="bg-black rounded-lg border border-border-default aspect-[4/3] relative overflow-hidden">
+                <VncViewer
+                  key={selectedVNC}
+                  port={selectedVNC}
+                  className="w-full h-full relative"
                 />
               </div>
               <p className="text-xs text-text-muted text-center font-mono">
-                VNC :{selectedVNC} → noVNC :{selectedVNC + 100}
+                VNC :{selectedVNC} via WebSocket proxy
               </p>
               <p className="text-[11px] text-text-muted text-center">
-                Use a noVNC client or connect directly via VNC viewer to 127.0.0.1:{selectedVNC}
+                Connect directly via VNC viewer to 127.0.0.1:{selectedVNC}
               </p>
             </div>
           ) : (

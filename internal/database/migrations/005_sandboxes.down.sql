@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS weekly_stats;
+DROP TABLE IF EXISTS proxies;
+DROP TABLE IF EXISTS sandboxes;

@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-color: theme('colors.border.default');
+  }
+  body {
+    @apply bg-bg-primary text-text-primary font-sans antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-bg-primary;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border-hover rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-accent;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-bg-secondary border border-border-default rounded-xl p-5
+           transition-all duration-200
+           hover:border-border-hover hover:shadow-[0_0_20px_rgba(59,130,246,0.08)];
+  }
+
+  .btn-primary {
+    @apply bg-accent text-white px-4 py-2.5 rounded-lg font-medium
+           transition-all duration-150
+           hover:bg-accent-hover hover:shadow-[0_0_20px_rgba(59,130,246,0.25)]
+           active:scale-[0.98];
+  }
+
+  .btn-secondary {
+    @apply bg-bg-tertiary text-text-primary px-4 py-2.5 rounded-lg font-medium
+           transition-all duration-150
+           hover:bg-border-hover;
+  }
+
+  .btn-danger {
+    @apply bg-status-error text-white px-4 py-2.5 rounded-lg font-medium
+           transition-all duration-150
+           hover:bg-red-600;
+  }
+
+  .btn-ghost {
+    @apply bg-transparent text-text-secondary px-4 py-2.5 rounded-lg font-medium
+           transition-all duration-150
+           hover:bg-bg-tertiary hover:text-text-primary;
+  }
+
+  .table-header {
+    @apply text-[11px] uppercase tracking-wider text-text-muted font-semibold;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .status-dot {
+    @apply w-2 h-2 rounded-full inline-block;
+  }
+}
+
+@layer utilities {
+  .glow-blue {
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.15);
+  }
+
+  .glow-blue-strong {
+    box-shadow: 0 0 30px rgba(59, 130, 246, 0.3);
+  }
+}

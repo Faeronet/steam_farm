@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sfarm-postgres
+    environment:
+      POSTGRES_USER: sfarm
+      POSTGRES_PASSWORD: sfarm_dev_pass
+      POSTGRES_DB: steam_farm
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sfarm -d steam_farm"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: sfarm-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://sfarm:sfarm_dev_pass@postgres:5432/steam_farm?sslmode=disable
+      GRPC_PORT: "9090"
+      HTTP_PORT: "8085"
+    ports:
+      - "8085:8085"
+      - "9091:9090"
+
+volumes:
+  pgdata:

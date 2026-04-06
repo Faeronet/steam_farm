@@ -1,0 +1,48 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV DISPLAY=:99
+
+RUN dpkg --add-architecture i386 && \
+    apt-get update && apt-get install -y \
+    xvfb \
+    x11vnc \
+    curl \
+    ca-certificates \
+    sudo \
+    lib32gcc-s1 \
+    lib32stdc++6 \
+    libgl1-mesa-dri \
+    libgl1-mesa-dri:i386 \
+    libvulkan1 \
+    mesa-vulkan-drivers \
+    libsdl2-2.0-0 \
+    dbus \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash steam && \
+    echo "steam ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+RUN mkdir -p /opt/steam && chown steam:steam /opt/steam
+
+USER steam
+WORKDIR /home/steam
+
+RUN curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar -xzC /opt/steam && \
+    /opt/steam/steamcmd.sh +quit
+
+COPY --chown=steam:steam docker/configs/cs2/cs2_video.txt /home/steam/.cs2_video.txt
+COPY --chown=steam:steam docker/configs/cs2/autoexec.cfg /home/steam/.autoexec.cfg
+COPY --chown=steam:steam docker/scripts/entrypoint.sh /entrypoint.sh
+
+ENV GAME_TYPE=cs2
+
+USER root
+RUN chmod +x /entrypoint.sh
+
+USER steam
+
+EXPOSE 5900
+VOLUME ["/home/steam/Steam"]
+
+ENTRYPOINT ["/entrypoint.sh"]

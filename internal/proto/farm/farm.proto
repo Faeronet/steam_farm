@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package farm;
+
+option go_package = "github.com/faeronet/steam-farm-system/internal/proto/farm";
+
+service FarmService {
+  rpc Connect(stream ClientMessage) returns (stream ServerMessage);
+  rpc ReportStatus(StatusReport) returns (Ack);
+  rpc ReportDrop(DropReport) returns (Ack);
+  rpc GetAccounts(AccountsRequest) returns (AccountsResponse);
+}
+
+message ClientMessage {
+  string client_id = 1;
+  oneof payload {
+    StatusReport status = 2;
+    DropReport drop = 3;
+    HeartbeatMsg heartbeat = 4;
+  }
+}
+
+message ServerMessage {
+  oneof payload {
+    CommandMsg command = 1;
+    AccountsResponse accounts = 2;
+    Ack ack = 3;
+  }
+}
+
+message StatusReport {
+  int64 account_id = 1;
+  string status = 2;
+  string detail = 3;
+  string game_type = 4;
+  int32 level = 5;
+  int32 xp = 6;
+  double hours_played = 7;
+}
+
+message DropReport {
+  int64 account_id = 1;
+  string game_type = 2;
+  string item_name = 3;
+  string item_type = 4;
+  string item_image_url = 5;
+  bool has_choice = 6;
+  repeated ChoiceOption choices = 7;
+}
+
+message ChoiceOption {
+  string id = 1;
+  string name = 2;
+  string type = 3;
+  string image_url = 4;
+}
+
+message CommandMsg {
+  string command = 1;
+  repeated int64 account_ids = 2;
+  map<string, string> params = 3;
+}
+
+message HeartbeatMsg {
+  string client_id = 1;
+  int32 active_bots = 2;
+  int32 active_sandboxes = 3;
+  double cpu_usage = 4;
+  double memory_usage = 5;
+}
+
+message AccountsRequest {
+  string game_type = 1;
+  string status = 2;
+}
+
+message AccountsResponse {
+  repeated AccountInfo accounts = 1;
+}
+
+message AccountInfo {
+  int64 id = 1;
+  string username = 2;
+  string game_type = 3;
+  string farm_mode = 4;
+  string status = 5;
+  string shared_secret = 6;
+  string identity_secret = 7;
+  string proxy = 8;
+}
+
+message Ack {
+  bool ok = 1;
+  string message = 2;
+}

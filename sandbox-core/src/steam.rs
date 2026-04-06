@@ -144,8 +144,8 @@ pub fn game_app_id(game: &str) -> u32 {
 
 pub fn default_launch_opts(game: &str) -> &'static str {
     match game {
-        "cs2" => "-novid -nojoy -low -vulkan -w 640 -h 480 +fps_max 15 +cl_disablehtmlmotd 1 -nosound",
-        "dota2" => "-novid -nojoy -low -vulkan -w 640 -h 480 +fps_max 15 -map dota -nosound",
+        "cs2" => "-novid -nojoy -low -w 640 -h 480 +fps_max 10 +cl_disablehtmlmotd 1 -nosound -nopreload +r_dynamic 0 +mat_queue_mode 0",
+        "dota2" => "-novid -nojoy -low -w 640 -h 480 +fps_max 10 -map dota -nosound -nopreload",
         _ => "",
     }
 }

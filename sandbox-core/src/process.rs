@@ -216,11 +216,6 @@ impl ProcessSupervisor {
             r#"
 export DISPLAY='{display}'
 export HOME='{snap_home}'
-export LIBGL_ALWAYS_SOFTWARE=1
-export GALLIUM_DRIVER=llvmpipe
-export MESA_GL_VERSION_OVERRIDE=4.5
-export MESA_GLSL_VERSION_OVERRIDE=450
-export MESA_LOADER_DRIVER_OVERRIDE=swrast
 export STEAM_DISABLE_BROWSER_SANDBOX=1
 export CEF_DISABLE_SANDBOX=1
 export SDL_VIDEODRIVER=x11
@@ -282,10 +277,15 @@ for item in "$STEAM_REAL/ubuntu12_64"/*; do
     ln -sfn "$item" "$STEAM_LOCAL/ubuntu12_64/$name" 2>/dev/null
 done
 
-# Custom steamwebhelper_sniper_wrap.sh: only add --no-sandbox and --disable-dev-shm-usage
+# Custom steamwebhelper_sniper_wrap.sh: software rendering + no-sandbox for CEF only
 cat > "$STEAM_LOCAL/ubuntu12_64/steamwebhelper_sniper_wrap.sh" << 'WRAPEOF'
 #!/bin/bash
 export LD_LIBRARY_PATH=.${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+export MESA_GL_VERSION_OVERRIDE=4.5
+export MESA_GLSL_VERSION_OVERRIDE=450
+export MESA_LOADER_DRIVER_OVERRIDE=swrast
 echo "<6>exec ./steamwebhelper (sandbox-wrapped) $*"
 echo "<remaining-lines-assume-level=7>"
 exec ./steamwebhelper \
@@ -294,9 +294,6 @@ exec ./steamwebhelper \
     "$@"
 WRAPEOF
 chmod +x "$STEAM_LOCAL/ubuntu12_64/steamwebhelper_sniper_wrap.sh"
-
-# Force SwiftShader for Vulkan so CEF has a software GPU path
-export VK_ICD_FILENAMES="$STEAM_REAL/ubuntu12_64/vk_swiftshader_icd.json"
 
 # .steam symlinks
 mkdir -p "$HOME/.steam"

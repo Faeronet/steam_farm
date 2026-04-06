@@ -85,7 +85,7 @@ impl ProcessSupervisor {
         let _ = std::fs::remove_file(&socket_file);
 
         let mut child = Command::new(&xvfb_bin)
-            .args([&display, "-screen", "0", "640x480x24", "-ac", "-nolisten", "tcp"])
+            .args([&display, "-screen", "0", "1280x720x24", "-ac", "-nolisten", "tcp", "+extension", "GLX"])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -220,10 +220,10 @@ export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
 export MESA_GL_VERSION_OVERRIDE=4.5
 export MESA_GLSL_VERSION_OVERRIDE=450
+export MESA_LOADER_DRIVER_OVERRIDE=swrast
 export STEAM_DISABLE_BROWSER_SANDBOX=1
 export CEF_DISABLE_SANDBOX=1
 export SDL_VIDEODRIVER=x11
-export MESA_LOADER_DRIVER_OVERRIDE=swrast
 
 # Provide a dbus session bus via dbus-launch if available, else set a dummy socket
 if command -v dbus-daemon >/dev/null 2>&1; then
@@ -237,10 +237,12 @@ STEAM_REAL='{steam_real}'
 STEAM_LOCAL="$HOME/.local/share/Steam"
 
 mkdir -p "$STEAM_LOCAL"
+
 # Copy steam.sh so STEAMROOT resolves to shadow dir; symlink everything else
 for item in "$STEAM_REAL"/*; do
     name=$(basename "$item")
     [ "$name" = "ubuntu12_32" ] && continue
+    [ "$name" = "ubuntu12_64" ] && continue
     if [ "$name" = "steam.sh" ]; then
         cp "$item" "$STEAM_LOCAL/$name"
         chmod +x "$STEAM_LOCAL/$name"
@@ -254,6 +256,35 @@ mkdir -p "$STEAM_LOCAL/ubuntu12_32"
 for item in "$STEAM_REAL/ubuntu12_32"/*; do
     ln -sfn "$item" "$STEAM_LOCAL/ubuntu12_32/$(basename "$item")" 2>/dev/null
 done
+
+# Shadow ubuntu12_64 — symlink all except steamwebhelper_sniper_wrap.sh
+mkdir -p "$STEAM_LOCAL/ubuntu12_64"
+for item in "$STEAM_REAL/ubuntu12_64"/*; do
+    name=$(basename "$item")
+    [ "$name" = "steamwebhelper_sniper_wrap.sh" ] && continue
+    ln -sfn "$item" "$STEAM_LOCAL/ubuntu12_64/$name" 2>/dev/null
+done
+
+# Custom steamwebhelper_sniper_wrap.sh that injects flags for headless rendering
+cat > "$STEAM_LOCAL/ubuntu12_64/steamwebhelper_sniper_wrap.sh" << 'WRAPEOF'
+#!/bin/bash
+export LD_LIBRARY_PATH=.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+echo "<6>exec ./steamwebhelper (sandbox-wrapped) $*"
+echo "<remaining-lines-assume-level=7>"
+exec ./steamwebhelper \
+    --no-sandbox \
+    --disable-dev-shm-usage \
+    --disable-gpu-sandbox \
+    --in-process-gpu \
+    --disable-software-rasterizer \
+    --disable-gpu \
+    --no-zygote \
+    "$@"
+WRAPEOF
+chmod +x "$STEAM_LOCAL/ubuntu12_64/steamwebhelper_sniper_wrap.sh"
+
+# Force SwiftShader for Vulkan so CEF has a software GPU path
+export VK_ICD_FILENAMES="$STEAM_REAL/ubuntu12_64/vk_swiftshader_icd.json"
 
 # .steam symlinks
 mkdir -p "$HOME/.steam"

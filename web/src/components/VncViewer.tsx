@@ -4,15 +4,26 @@ import RFB from '@novnc/novnc/lib/rfb';
 interface VncViewerProps {
   port: number;
   className?: string;
+  viewOnly?: boolean;
+  onStatusChange?: (status: string) => void;
 }
 
-export default function VncViewer({ port, className }: VncViewerProps) {
+export default function VncViewer({ port, className, viewOnly = false, onStatusChange }: VncViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<RFB | null>(null);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting');
 
+  const updateStatus = useCallback((s: 'connecting' | 'connected' | 'disconnected' | 'error') => {
+    setStatus(s);
+    onStatusChange?.(s);
+  }, [onStatusChange]);
+
   const connect = useCallback(() => {
     if (!containerRef.current) return;
+    if (rfbRef.current) {
+      rfbRef.current.disconnect();
+      rfbRef.current = null;
+    }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/vnc/${port}`;
@@ -22,24 +33,27 @@ export default function VncViewer({ port, className }: VncViewerProps) {
         wsProtocols: [],
       });
 
-      rfb.viewOnly = true;
+      rfb.viewOnly = viewOnly;
       rfb.scaleViewport = true;
       rfb.resizeSession = false;
-      rfb.showDotCursor = false;
+      rfb.showDotCursor = !viewOnly;
+      rfb.focusOnClick = true;
+      rfb.qualityLevel = 6;
+      rfb.compressionLevel = 2;
 
-      rfb.addEventListener('connect', () => setStatus('connected'));
+      rfb.addEventListener('connect', () => updateStatus('connected'));
       rfb.addEventListener('disconnect', () => {
-        setStatus('disconnected');
+        updateStatus('disconnected');
         rfbRef.current = null;
       });
-      rfb.addEventListener('securityfailure', () => setStatus('error'));
+      rfb.addEventListener('securityfailure', () => updateStatus('error'));
 
       rfbRef.current = rfb;
-      setStatus('connecting');
+      updateStatus('connecting');
     } catch {
-      setStatus('error');
+      updateStatus('error');
     }
-  }, [port]);
+  }, [port, viewOnly, updateStatus]);
 
   useEffect(() => {
     connect();
@@ -53,7 +67,11 @@ export default function VncViewer({ port, className }: VncViewerProps) {
 
   return (
     <div className={className}>
-      <div ref={containerRef} className="w-full h-full bg-black rounded-lg overflow-hidden" />
+      <div
+        ref={containerRef}
+        className="w-full h-full bg-black rounded-lg overflow-hidden"
+        style={{ cursor: viewOnly ? 'default' : 'crosshair' }}
+      />
       {status !== 'connected' && (
         <div className="absolute inset-0 flex items-center justify-center bg-bg-primary/80 rounded-lg">
           {status === 'connecting' && (

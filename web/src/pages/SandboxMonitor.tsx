@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
-import { Monitor, Play, Square, RefreshCw, Cpu, HardDrive } from 'lucide-react';
+import { Monitor, Play, Square, RefreshCw, Cpu, HardDrive, Maximize2, Minimize2, X } from 'lucide-react';
 import VncViewer from '@/components/VncViewer';
 
 interface ContainerInfo {
@@ -21,15 +21,6 @@ async function fetchSandboxes(): Promise<ContainerInfo[]> {
   return res.json();
 }
 
-async function launchSandbox(accountId: number, gameType: string) {
-  const res = await fetch('/api/sandbox/launch', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ account_id: accountId, game_type: gameType }),
-  });
-  return res.json();
-}
-
 async function stopSandbox(accountId: number) {
   const res = await fetch('/api/sandbox/stop', {
     method: 'POST',
@@ -39,9 +30,85 @@ async function stopSandbox(accountId: number) {
   return res.json();
 }
 
+function VncFullscreenModal({ port, onClose }: { port: number; onClose: () => void }) {
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const toggleFullscreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !document.fullscreenElement) {
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', onEsc);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('keydown', onEsc);
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+    };
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black flex flex-col">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between px-4 py-2 bg-bg-secondary border-b border-border-default shrink-0">
+        <div className="flex items-center gap-3">
+          <Monitor className="w-4 h-4 text-accent" />
+          <span className="text-sm font-semibold text-text-primary">
+            VNC — Port {port}
+          </span>
+          <span className="text-xs text-text-muted">
+            Click inside to interact with Steam
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggleFullscreen}
+            className="p-1.5 rounded hover:bg-bg-tertiary text-text-muted hover:text-text-primary transition-colors"
+            title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+          >
+            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded hover:bg-red-500/20 text-text-muted hover:text-red-400 transition-colors"
+            title="Close (Esc)"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* VNC Canvas — fills remaining space */}
+      <div className="flex-1 relative overflow-hidden">
+        <VncViewer
+          key={`fullscreen-${port}`}
+          port={port}
+          viewOnly={false}
+          className="w-full h-full relative"
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function SandboxMonitor() {
   const queryClient = useQueryClient();
   const [selectedVNC, setSelectedVNC] = useState<number | null>(null);
+  const [fullscreenVNC, setFullscreenVNC] = useState<number | null>(null);
 
   const { data: containers, isLoading } = useQuery({
     queryKey: ['sandboxes'],
@@ -59,6 +126,14 @@ export default function SandboxMonitor() {
 
   return (
     <div className="space-y-4 animate-fade-in">
+      {/* Fullscreen VNC Modal */}
+      {fullscreenVNC && (
+        <VncFullscreenModal
+          port={fullscreenVNC}
+          onClose={() => setFullscreenVNC(null)}
+        />
+      )}
+
       {/* Summary bar */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
         <div className="card flex items-center gap-3">
@@ -205,14 +280,19 @@ export default function SandboxMonitor() {
                 <VncViewer
                   key={selectedVNC}
                   port={selectedVNC}
+                  viewOnly={true}
                   className="w-full h-full relative"
                 />
               </div>
+              <button
+                onClick={() => setFullscreenVNC(selectedVNC)}
+                className="w-full btn-primary text-sm py-2 flex items-center justify-center gap-2"
+              >
+                <Maximize2 className="w-4 h-4" />
+                Open Interactive VNC
+              </button>
               <p className="text-xs text-text-muted text-center font-mono">
                 VNC :{selectedVNC} via WebSocket proxy
-              </p>
-              <p className="text-[11px] text-text-muted text-center">
-                Connect directly via VNC viewer to 127.0.0.1:{selectedVNC}
               </p>
             </div>
           ) : (

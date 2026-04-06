@@ -144,7 +144,15 @@ pub fn game_app_id(game: &str) -> u32 {
 
 pub fn default_launch_opts(game: &str) -> &'static str {
     match game {
-        "cs2" => "-novid -nojoy -low -w 640 -h 480 +fps_max 10 +cl_disablehtmlmotd 1 -nosound -nopreload +r_dynamic 0 +mat_queue_mode 0",
+        "cs2" => concat!(
+            "-novid -nojoy -low -w 640 -h 480 +fps_max 10 ",
+            "+cl_disablehtmlmotd 1 -nosound -nopreload +r_dynamic 0 +mat_queue_mode 0 ",
+            // Auto-start local Deathmatch with bots
+            "+game_type 1 +game_mode 2 +map de_dust2 ",
+            "+bot_quota 9 +bot_difficulty 3 +sv_cheats 0 ",
+            // Log console output for debugging
+            "-condebug"
+        ),
         "dota2" => "-novid -nojoy -low -w 640 -h 480 +fps_max 10 -map dota -nosound -nopreload",
         _ => "",
     }

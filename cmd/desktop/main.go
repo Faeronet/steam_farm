@@ -78,6 +78,9 @@ func main() {
 	if sandboxMgr != nil {
 		vncProxy := NewVNCProxy()
 		mux.HandleFunc("/vnc/", vncProxy.Handle)
+
+		inputRelay := NewInputRelay()
+		mux.HandleFunc("/ws/input/", inputRelay.Handle)
 	}
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

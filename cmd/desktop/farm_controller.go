@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/faeronet/steam-farm-system/internal/database"
 	"github.com/faeronet/steam-farm-system/internal/database/models"
 	"github.com/faeronet/steam-farm-system/internal/engine"
+	"github.com/faeronet/steam-farm-system/internal/engine/cs2/autoplay"
 	"github.com/faeronet/steam-farm-system/internal/engine/sandbox"
 	"github.com/faeronet/steam-farm-system/internal/server/ws"
 )
@@ -21,6 +23,7 @@ type FarmController struct {
 	db         *database.DB
 	bots       *engine.Manager
 	sandboxes  *sandbox.Manager
+	autoplay   *autoplay.Manager
 	wsHub      *ws.Hub
 	cfg        *common.ServerConfig
 	logCapture *LogCapture
@@ -28,10 +31,16 @@ type FarmController struct {
 }
 
 func NewFarmController(appCtx context.Context, db *database.DB, bots *engine.Manager, sb *sandbox.Manager, hub *ws.Hub, cfg *common.ServerConfig, lc *LogCapture) *FarmController {
+	var ap *autoplay.Manager
+	if sb != nil {
+		ap = autoplay.NewManager(appCtx)
+	}
+
 	fc := &FarmController{
 		db:         db,
 		bots:       bots,
 		sandboxes:  sb,
+		autoplay:   ap,
 		wsHub:      hub,
 		cfg:        cfg,
 		logCapture: lc,
@@ -70,6 +79,9 @@ func (fc *FarmController) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/drops/pending", fc.pendingDrops)
 	mux.HandleFunc("/api/farm/sessions", fc.sessions)
 	mux.HandleFunc("/api/logs", fc.logs)
+	mux.HandleFunc("/api/autoplay/status", fc.autoplayStatus)
+	mux.HandleFunc("/api/autoplay/start", fc.autoplayStart)
+	mux.HandleFunc("/api/autoplay/stop", fc.autoplayStop)
 }
 
 func (fc *FarmController) health(w http.ResponseWriter, r *http.Request) {
@@ -283,6 +295,24 @@ func (fc *FarmController) startFarm(w http.ResponseWriter, r *http.Request) {
 				"account_id": a.ID, "container": info.Name, "status": "running", "vnc_port": info.VNCPort,
 			})
 			log.Printf("[Farm] Sandbox started for %s: container=%s vnc=%d", a.Username, info.Name, info.VNCPort)
+
+			// Auto-start CS2 bot if game type is cs2
+			if string(effectiveGame) == "cs2" && fc.autoplay != nil {
+				displayNum := 0
+				if len(info.Display) > 1 {
+					fmt.Sscanf(info.Display[1:], "%d", &displayNum)
+				}
+				steamIDStr := ""
+				if a.SteamID != nil {
+					steamIDStr = fmt.Sprintf("%d", *a.SteamID)
+				}
+				if err := fc.autoplay.StartBot(a.ID, displayNum, steamIDStr); err != nil {
+					log.Printf("[Farm] Autoplay bot failed for %s: %v", a.Username, err)
+				} else {
+					log.Printf("[Farm] Autoplay bot queued for %s (display :%d)", a.Username, displayNum)
+				}
+			}
+
 			results = append(results, map[string]interface{}{"account_id": accID, "mode": "sandbox", "container": info.Name, "vnc_port": info.VNCPort})
 		} else {
 			log.Printf("[Farm] Starting protocol bot for %s (game=%s, mode=%s)", a.Username, effectiveGame, mode)
@@ -316,6 +346,9 @@ func (fc *FarmController) stopFarm(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	for _, accID := range req.AccountIDs {
+		if fc.autoplay != nil {
+			fc.autoplay.StopBot(accID)
+		}
 		_ = fc.bots.StopBot(accID)
 		if fc.sandboxes != nil {
 			_ = fc.sandboxes.Stop(ctx, accID)
@@ -328,6 +361,9 @@ func (fc *FarmController) stopFarm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (fc *FarmController) stopAll(w http.ResponseWriter, r *http.Request) {
+	if fc.autoplay != nil {
+		fc.autoplay.StopAll()
+	}
 	fc.bots.StopAll()
 	if fc.sandboxes != nil {
 		fc.sandboxes.StopAll(r.Context())
@@ -602,4 +638,81 @@ func nilStr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// --- AUTOPLAY ---
+
+func (fc *FarmController) autoplayStatus(w http.ResponseWriter, r *http.Request) {
+	if fc.autoplay == nil {
+		writeJSON(w, 200, []interface{}{})
+		return
+	}
+	writeJSON(w, 200, fc.autoplay.AllStatuses())
+}
+
+func (fc *FarmController) autoplayStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, 405, map[string]string{"error": "POST only"})
+		return
+	}
+	if fc.autoplay == nil {
+		writeJSON(w, 503, map[string]string{"error": "autoplay not available"})
+		return
+	}
+
+	var req struct {
+		AccountID int64 `json:"account_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+
+	info, ok := fc.sandboxes.Get(req.AccountID)
+	if !ok {
+		writeJSON(w, 404, map[string]string{"error": "no running sandbox for this account"})
+		return
+	}
+
+	displayNum := 0
+	if len(info.Display) > 1 {
+		fmt.Sscanf(info.Display[1:], "%d", &displayNum)
+	}
+
+	var steamID string
+	fc.db.Pool.QueryRow(r.Context(), `SELECT COALESCE(steam_id,'') FROM accounts WHERE id=$1`, req.AccountID).Scan(&steamID)
+
+	if err := fc.autoplay.StartBot(req.AccountID, displayNum, steamID); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "started"})
+}
+
+func (fc *FarmController) autoplayStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, 405, map[string]string{"error": "POST only"})
+		return
+	}
+	if fc.autoplay == nil {
+		writeJSON(w, 503, map[string]string{"error": "autoplay not available"})
+		return
+	}
+
+	var req struct {
+		AccountID int64 `json:"account_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+
+	fc.autoplay.StopBot(req.AccountID)
+	writeJSON(w, 200, map[string]string{"status": "stopped"})
+}
+
+func (fc *FarmController) Shutdown() {
+	if fc.autoplay != nil {
+		fc.autoplay.Shutdown()
+	}
 }

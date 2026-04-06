@@ -1,8 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
-import { Monitor, Play, Square, RefreshCw, Cpu, HardDrive, Maximize2, Minimize2, X } from 'lucide-react';
+import { Monitor, Play, Square, RefreshCw, Cpu, HardDrive, Maximize2, Minimize2, X, Crosshair, Bot, Heart, Clock, Gamepad2 } from 'lucide-react';
 import VncViewer from '@/components/VncViewer';
+import FpsInputOverlay from '@/components/FpsInputOverlay';
 
 interface ContainerInfo {
   id: string;
@@ -11,6 +12,7 @@ interface ContainerInfo {
   game_type: string;
   status: string;
   vnc_port: number;
+  display: string;
   cpu_percent: number;
   memory_mb: number;
   hostname: string;
@@ -30,8 +32,49 @@ async function stopSandbox(accountId: number) {
   return res.json();
 }
 
-function VncFullscreenModal({ port, onClose }: { port: number; onClose: () => void }) {
+interface BotStatus {
+  display: number;
+  steam_id: string;
+  phase: string;
+  running: boolean;
+  uptime: string;
+  kills: number;
+  deaths: number;
+  health: number;
+  map: string;
+}
+
+async function fetchAutoplayStatus(): Promise<BotStatus[]> {
+  const res = await fetch('/api/autoplay/status');
+  return res.json();
+}
+
+async function autoplayStart(accountId: number) {
+  return fetch('/api/autoplay/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account_id: accountId }),
+  }).then(r => r.json());
+}
+
+async function autoplayStop(accountId: number) {
+  return fetch('/api/autoplay/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account_id: accountId }),
+  }).then(r => r.json());
+}
+
+function parseDisplayNum(display: string): number {
+  const n = parseInt(display.replace(':', ''), 10);
+  return isNaN(n) ? 100 : n;
+}
+
+function VncFullscreenModal({ port, display, onClose }: { port: number; display: string; onClose: () => void }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fpsMode, setFpsMode] = useState(false);
+  const [pointerLocked, setPointerLocked] = useState(false);
+  const displayNum = parseDisplayNum(display);
 
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -46,7 +89,7 @@ function VncFullscreenModal({ port, onClose }: { port: number; onClose: () => vo
     document.addEventListener('fullscreenchange', onFsChange);
 
     const onEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !document.fullscreenElement) {
+      if (e.key === 'Escape' && !document.fullscreenElement && !pointerLocked) {
         onClose();
       }
     };
@@ -59,7 +102,7 @@ function VncFullscreenModal({ port, onClose }: { port: number; onClose: () => vo
         document.exitFullscreen().catch(() => {});
       }
     };
-  }, [onClose]);
+  }, [onClose, pointerLocked]);
 
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col">
@@ -71,10 +114,23 @@ function VncFullscreenModal({ port, onClose }: { port: number; onClose: () => vo
             VNC — Port {port}
           </span>
           <span className="text-xs text-text-muted">
-            Click inside to interact with Steam
+            {fpsMode ? 'FPS mode — click inside to capture' : 'Click inside to interact with Steam'}
           </span>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setFpsMode(!fpsMode)}
+            className={cn(
+              'flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-colors',
+              fpsMode
+                ? 'bg-accent/20 text-accent border border-accent/40'
+                : 'hover:bg-bg-tertiary text-text-muted hover:text-text-primary'
+            )}
+            title="Toggle FPS mouse mode (relative mouse for camera control)"
+          >
+            <Crosshair className="w-3.5 h-3.5" />
+            FPS
+          </button>
           <button
             onClick={toggleFullscreen}
             className="p-1.5 rounded hover:bg-bg-tertiary text-text-muted hover:text-text-primary transition-colors"
@@ -92,13 +148,18 @@ function VncFullscreenModal({ port, onClose }: { port: number; onClose: () => vo
         </div>
       </div>
 
-      {/* VNC Canvas — fills remaining space */}
+      {/* VNC Canvas + FPS overlay */}
       <div className="flex-1 relative overflow-hidden">
         <VncViewer
           key={`fullscreen-${port}`}
           port={port}
-          viewOnly={false}
+          viewOnly={fpsMode}
           className="w-full h-full relative"
+        />
+        <FpsInputOverlay
+          display={displayNum}
+          active={fpsMode}
+          onLockChange={setPointerLocked}
         />
       </div>
     </div>
@@ -108,7 +169,7 @@ function VncFullscreenModal({ port, onClose }: { port: number; onClose: () => vo
 export default function SandboxMonitor() {
   const queryClient = useQueryClient();
   const [selectedVNC, setSelectedVNC] = useState<number | null>(null);
-  const [fullscreenVNC, setFullscreenVNC] = useState<number | null>(null);
+  const [fullscreenVNC, setFullscreenVNC] = useState<{ port: number; display: string } | null>(null);
 
   const { data: containers, isLoading } = useQuery({
     queryKey: ['sandboxes'],
@@ -121,6 +182,22 @@ export default function SandboxMonitor() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sandboxes'] }),
   });
 
+  const { data: botStatuses } = useQuery({
+    queryKey: ['autoplay-status'],
+    queryFn: fetchAutoplayStatus,
+    refetchInterval: 2000,
+  });
+
+  const apStartMutation = useMutation({
+    mutationFn: (accountId: number) => autoplayStart(accountId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['autoplay-status'] }),
+  });
+
+  const apStopMutation = useMutation({
+    mutationFn: (accountId: number) => autoplayStop(accountId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['autoplay-status'] }),
+  });
+
   const totalCPU = containers?.reduce((s, c) => s + c.cpu_percent, 0) ?? 0;
   const totalRAM = containers?.reduce((s, c) => s + c.memory_mb, 0) ?? 0;
 
@@ -129,7 +206,8 @@ export default function SandboxMonitor() {
       {/* Fullscreen VNC Modal */}
       {fullscreenVNC && (
         <VncFullscreenModal
-          port={fullscreenVNC}
+          port={fullscreenVNC.port}
+          display={fullscreenVNC.display}
           onClose={() => setFullscreenVNC(null)}
         />
       )}
@@ -274,7 +352,10 @@ export default function SandboxMonitor() {
           <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
             <Monitor className="w-4 h-4 text-accent" /> Game Preview
           </h3>
-          {selectedVNC ? (
+          {selectedVNC ? (() => {
+            const selectedContainer = containers?.find(c => c.vnc_port === selectedVNC);
+            const displayStr = selectedContainer?.display ?? ':100';
+            return (
             <div className="space-y-2">
               <div className="bg-black rounded-lg border border-border-default aspect-[4/3] relative overflow-hidden">
                 <VncViewer
@@ -285,7 +366,7 @@ export default function SandboxMonitor() {
                 />
               </div>
               <button
-                onClick={() => setFullscreenVNC(selectedVNC)}
+                onClick={() => setFullscreenVNC({ port: selectedVNC, display: displayStr })}
                 className="w-full btn-primary text-sm py-2 flex items-center justify-center gap-2"
               >
                 <Maximize2 className="w-4 h-4" />
@@ -295,7 +376,8 @@ export default function SandboxMonitor() {
                 VNC :{selectedVNC} via WebSocket proxy
               </p>
             </div>
-          ) : (
+            );
+          })() : (
             <div className="bg-bg-primary rounded-lg border border-border-default aspect-[4/3] flex items-center justify-center">
               <div className="text-center text-text-muted">
                 <Monitor className="w-8 h-8 mx-auto mb-2 opacity-30" />

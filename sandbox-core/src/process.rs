@@ -300,6 +300,14 @@ mkdir -p "$HOME/.steam"
 ln -sfn "$STEAM_LOCAL" "$HOME/.steam/steam"
 ln -sfn "$STEAM_LOCAL" "$HOME/.steam/root"
 
+# Share GPU shader caches from host Steam to avoid recompilation on each launch
+SNAP_COMMON='{snap_common}'
+mkdir -p "$HOME/.cache"
+for dir in mesa_shader_cache nvidia fontconfig; do
+    [ -d "$SNAP_COMMON/.cache/$dir" ] && ln -sfn "$SNAP_COMMON/.cache/$dir" "$HOME/.cache/$dir"
+done
+[ -d "$SNAP_COMMON/.nv" ] && ln -sfn "$SNAP_COMMON/.nv" "$HOME/.nv"
+
 # Dummy zenity to suppress blocking dialogs
 mkdir -p "$HOME/bin"
 printf '#!/bin/sh\nexit 0\n' > "$HOME/bin/zenity"
@@ -310,6 +318,7 @@ exec "$STEAM_LOCAL/steam.sh" {args}
 "#,
             display = display,
             snap_home = sandbox_home.display(),
+            snap_common = snap_user_common,
             steam_real = steam_real,
             args = args_str,
         );

@@ -388,6 +388,98 @@ export default function SandboxMonitor() {
           )}
         </div>
       </div>
+
+      {/* Autoplay Bot Panel */}
+      <div className="card !p-0 overflow-hidden">
+        <div className="px-4 py-3 border-b border-border-default flex items-center justify-between">
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <Gamepad2 className="w-4 h-4 text-accent" /> CS2 Autoplay Bots
+          </h3>
+          <span className="text-xs text-text-muted">
+            {botStatuses?.filter(b => b.running).length ?? 0} active
+          </span>
+        </div>
+
+        {(!botStatuses || botStatuses.length === 0) ? (
+          <div className="py-8 text-center text-text-muted text-sm">
+            <Bot className="w-8 h-8 mx-auto mb-2 opacity-30" />
+            <p>No autoplay bots running</p>
+            <p className="text-xs mt-1">Bots start automatically when CS2 sandboxes launch</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 p-4">
+            {botStatuses.map((bot) => (
+              <div
+                key={bot.display}
+                className={cn(
+                  'rounded-lg border p-3',
+                  bot.running ? 'border-accent/30 bg-accent/5' : 'border-border-default bg-bg-secondary'
+                )}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Bot className={cn('w-4 h-4', bot.running ? 'text-accent' : 'text-text-muted')} />
+                    <span className="text-sm font-mono font-medium">:{bot.display}</span>
+                  </div>
+                  <span className={cn(
+                    'badge text-[11px]',
+                    bot.phase === 'alive' ? 'bg-status-active/15 text-status-active' :
+                    bot.phase === 'dead' ? 'bg-red-500/15 text-red-400' :
+                    bot.phase === 'loading' ? 'bg-yellow-500/15 text-yellow-400' :
+                    'bg-blue-500/15 text-blue-400'
+                  )}>
+                    {bot.phase}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  <div className="flex items-center gap-1 text-text-muted">
+                    <Heart className="w-3 h-3" />
+                    <span className={bot.health > 0 ? 'text-status-active' : 'text-red-400'}>
+                      {bot.health}hp
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 text-text-muted">
+                    <Clock className="w-3 h-3" />
+                    <span>{bot.uptime || '—'}</span>
+                  </div>
+                  <div className="text-right text-text-muted">
+                    K:{bot.kills} D:{bot.deaths}
+                  </div>
+                </div>
+
+                {bot.map && (
+                  <p className="text-[11px] text-text-muted mt-1 font-mono">{bot.map}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Manual bot controls for containers without active bots */}
+        {containers && containers.length > 0 && (
+          <div className="px-4 py-2 border-t border-border-default flex items-center gap-2 flex-wrap">
+            {containers.filter(c => c.game_type === 'cs2' && c.status === 'running').map(c => {
+              const displayNum = parseInt(c.display?.replace(':', '') || '0', 10);
+              const hasBot = botStatuses?.some(b => b.display === displayNum && b.running);
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => hasBot ? apStopMutation.mutate(c.account_id) : apStartMutation.mutate(c.account_id)}
+                  className={cn(
+                    'text-xs px-3 py-1.5 rounded-md font-medium transition-colors',
+                    hasBot
+                      ? 'bg-red-500/15 text-red-400 hover:bg-red-500/25'
+                      : 'bg-accent/15 text-accent hover:bg-accent/25'
+                  )}
+                >
+                  {hasBot ? `Stop Bot ${c.display}` : `Start Bot ${c.display}`}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

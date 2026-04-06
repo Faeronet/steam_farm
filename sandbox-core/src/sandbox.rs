@@ -1,5 +1,4 @@
 use std::fs;
-use std::os::unix::fs as unix_fs;
 use std::path::PathBuf;
 
 use crate::ipc::{self, IpcEvent, LaunchConfig};
@@ -20,7 +19,7 @@ pub fn sandbox_dir(id: u64) -> PathBuf {
     }
 }
 
-fn setup_dirs(cfg: &LaunchConfig, steam_paths: &steam::SteamPaths) -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn setup_dirs(cfg: &LaunchConfig, _steam_paths: &steam::SteamPaths) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let base = sandbox_dir(cfg.id);
     if base.exists() {
         fs::remove_dir_all(&base)?;
@@ -44,17 +43,9 @@ fn setup_dirs(cfg: &LaunchConfig, steam_paths: &steam::SteamPaths) -> Result<Pat
         fs::set_permissions(fake_bin.join("zenity"), fs::Permissions::from_mode(0o755))?;
     }
 
-    // Symlink the host Steam directory (for non-snap fallback path)
-    let sandbox_steam = base.join("home/.local/share/Steam");
-    unix_fs::symlink(&steam_paths.root, &sandbox_steam)?;
-    unix_fs::symlink(&steam_paths.root, base.join("home/.steam/steam"))?;
-
-    if steam_paths.linux64.exists() {
-        unix_fs::symlink(&steam_paths.linux64, base.join("home/.steam/sdk64"))?;
-    }
-    if steam_paths.ubuntu12_32.exists() {
-        unix_fs::symlink(&steam_paths.ubuntu12_32, base.join("home/.steam/sdk32"))?;
-    }
+    // Steam directory structure is created by the snap inner_script
+    // which builds a shadow dir with a steamwebhelper wrapper.
+    // For non-snap fallback, symlinks are set up in start_via_direct().
 
     Ok(base)
 }
@@ -79,7 +70,7 @@ pub async fn run(cfg: LaunchConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Write supervisor PID for external stop command
     fs::write(base.join("pid"), std::process::id().to_string())?;
 
-    let mut supervisor = ProcessSupervisor::new(cfg.clone(), base, steam_paths);
+    let mut supervisor = ProcessSupervisor::new(cfg.clone(), base.clone(), steam_paths);
 
     supervisor.start_xvfb().await?;
     supervisor.start_vnc().await?;
@@ -98,6 +89,27 @@ pub async fn run(cfg: LaunchConfig) -> Result<(), Box<dyn std::error::Error>> {
     let game_pid = supervisor.game_pid();
     let monitor_handle = tokio::spawn(async move {
         monitor::run(game_pid).await;
+    });
+
+    // Watch Steam logs for debugging
+    let log_base = base.join("home/.local/share/Steam/logs");
+    let sandbox_id = cfg.id;
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        for log_name in ["bootstrap_log.txt", "connection_log.txt"] {
+            let log_path = log_base.join(log_name);
+            if log_path.exists() {
+                if let Ok(content) = fs::read_to_string(&log_path) {
+                    let lines: Vec<&str> = content.lines().collect();
+                    let start = if lines.len() > 20 { lines.len() - 20 } else { 0 };
+                    for line in &lines[start..] {
+                        if !line.trim().is_empty() {
+                            eprintln!("[steam-log-{}] [{}] {}", sandbox_id, log_name, line);
+                        }
+                    }
+                }
+            }
+        }
     });
 
     // Wait for game to exit or termination signal

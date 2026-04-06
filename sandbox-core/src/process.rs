@@ -71,7 +71,14 @@ impl ProcessSupervisor {
         let display_num = self.cfg.display;
         let display = format!(":{}", display_num);
 
-        // Clean up stale X11 lock files from previous runs
+        // Kill any orphaned Xvfb on the same display from a previous run
+        let _ = std::process::Command::new("pkill")
+            .args(["-9", "-f", &format!("Xvfb :{}", display_num)])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
         let lock_file = format!("/tmp/.X{}-lock", display_num);
         let socket_file = format!("/tmp/.X11-unix/X{}", display_num);
         let _ = std::fs::remove_file(&lock_file);
@@ -116,6 +123,13 @@ impl ProcessSupervisor {
         let port = self.cfg.vnc_port.to_string();
         let ld = lib_path();
 
+        // Kill any orphaned x11vnc on the same port
+        let _ = std::process::Command::new("sh")
+            .args(["-c", &format!("fuser -k {}/tcp 2>/dev/null || true", self.cfg.vnc_port)])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
         let mut child = Command::new(&vnc_bin)
             .args([
                 "-display", &display,
@@ -159,10 +173,6 @@ impl ProcessSupervisor {
             "-noverifyfiles".into(),
             "-skipsystemcheck".into(),
             "-no-child-update-ui".into(),
-            "-no-browser".into(),
-            "-nochatui".into(),
-            "-nofriendsui".into(),
-            "-silent".into(),
             "-login".into(),
             self.cfg.username.clone(),
             self.cfg.password.clone(),
@@ -200,25 +210,67 @@ impl ProcessSupervisor {
         // 2. Creates Steam symlinks
         // 3. Sets DISPLAY to the Xvfb instance
         // 4. Runs steam.sh with bootstrap-skip flags
+        let steam_real = format!("{}/.local/share/Steam", snap_user_common);
+
         let inner_script = format!(
             r#"
 export DISPLAY='{display}'
 export HOME='{snap_home}'
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+export MESA_GL_VERSION_OVERRIDE=4.5
+export MESA_GLSL_VERSION_OVERRIDE=450
 export STEAM_DISABLE_BROWSER_SANDBOX=1
-export STEAM_DISABLE_GPU=1
-export DBUS_SESSION_BUS_ADDRESS=disabled
-export STEAMWEBHELPER_ARGS="--disable-gpu --disable-gpu-compositing --no-sandbox --disable-software-rasterizer"
-mkdir -p "$HOME/.local/share" "$HOME/.steam" "$HOME/bin"
-ln -sfn '{steam_root}' "$HOME/.local/share/Steam"
-ln -sfn '{steam_root}' "$HOME/.steam/steam"
+export CEF_DISABLE_SANDBOX=1
+export SDL_VIDEODRIVER=x11
+export MESA_LOADER_DRIVER_OVERRIDE=swrast
+
+# Provide a dbus session bus via dbus-launch if available, else set a dummy socket
+if command -v dbus-daemon >/dev/null 2>&1; then
+    eval "$(dbus-launch --sh-syntax 2>/dev/null)" || true
+fi
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    export DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null
+fi
+
+STEAM_REAL='{steam_real}'
+STEAM_LOCAL="$HOME/.local/share/Steam"
+
+mkdir -p "$STEAM_LOCAL"
+# Copy steam.sh so STEAMROOT resolves to shadow dir; symlink everything else
+for item in "$STEAM_REAL"/*; do
+    name=$(basename "$item")
+    [ "$name" = "ubuntu12_32" ] && continue
+    if [ "$name" = "steam.sh" ]; then
+        cp "$item" "$STEAM_LOCAL/$name"
+        chmod +x "$STEAM_LOCAL/$name"
+    else
+        ln -sfn "$item" "$STEAM_LOCAL/$name" 2>/dev/null
+    fi
+done
+
+# Shadow ubuntu12_32 — symlink all files
+mkdir -p "$STEAM_LOCAL/ubuntu12_32"
+for item in "$STEAM_REAL/ubuntu12_32"/*; do
+    ln -sfn "$item" "$STEAM_LOCAL/ubuntu12_32/$(basename "$item")" 2>/dev/null
+done
+
+# .steam symlinks
+mkdir -p "$HOME/.steam"
+ln -sfn "$STEAM_LOCAL" "$HOME/.steam/steam"
+ln -sfn "$STEAM_LOCAL" "$HOME/.steam/root"
+
+# Dummy zenity to suppress blocking dialogs
+mkdir -p "$HOME/bin"
 printf '#!/bin/sh\nexit 0\n' > "$HOME/bin/zenity"
 chmod +x "$HOME/bin/zenity"
 export PATH="$HOME/bin:$PATH"
-exec "$HOME/.local/share/Steam/steam.sh" {args}
+
+exec "$STEAM_LOCAL/steam.sh" {args}
 "#,
             display = display,
             snap_home = sandbox_home.display(),
-            steam_root = snap_user_common + "/.local/share/Steam",
+            steam_real = steam_real,
             args = args_str,
         );
 

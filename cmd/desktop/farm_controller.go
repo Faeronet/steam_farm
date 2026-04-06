@@ -272,6 +272,13 @@ func (fc *FarmController) startFarm(w http.ResponseWriter, r *http.Request) {
 				 ON CONFLICT (account_id) DO UPDATE SET container_id=$2, status='running', updated_at=NOW()`,
 				a.ID, info.ID, info.Name, info.GameType, info.MachineID, info.Hostname, info.Display, info.VNCPort)
 
+			fc.db.Pool.Exec(dbCtx,
+				`UPDATE accounts SET status='farming', status_detail=$1, updated_at=NOW() WHERE id=$2`,
+				"sandbox: "+info.Name, a.ID)
+
+			fc.wsHub.Broadcast(ws.EventFarmStatus, map[string]interface{}{
+				"account_id": a.ID, "status": "farming", "detail": "sandbox: " + info.Name,
+			})
 			fc.wsHub.Broadcast(ws.EventSandboxChange, map[string]interface{}{
 				"account_id": a.ID, "container": info.Name, "status": "running", "vnc_port": info.VNCPort,
 			})

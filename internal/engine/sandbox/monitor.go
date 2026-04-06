@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"log"
 	"time"
 )
 
@@ -40,7 +39,7 @@ func (m *Monitor) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			snapshots := m.collectStats(ctx)
+			snapshots := m.collectStats()
 			if m.onChange != nil && len(snapshots) > 0 {
 				m.onChange(snapshots)
 			}
@@ -48,17 +47,12 @@ func (m *Monitor) Run(ctx context.Context) {
 	}
 }
 
-func (m *Monitor) collectStats(ctx context.Context) []ResourceSnapshot {
+func (m *Monitor) collectStats() []ResourceSnapshot {
 	containers := m.manager.List()
 	snapshots := make([]ResourceSnapshot, 0, len(containers))
 
 	for _, c := range containers {
-		stats, err := m.manager.docker.Stats(ctx, c.ID)
-		if err != nil {
-			log.Printf("[Monitor] Stats error for %s: %v", c.Name, err)
-			continue
-		}
-
+		stats := m.manager.GetStats(c.AccountID)
 		snapshots = append(snapshots, ResourceSnapshot{
 			ContainerID: c.ID,
 			AccountID:   c.AccountID,

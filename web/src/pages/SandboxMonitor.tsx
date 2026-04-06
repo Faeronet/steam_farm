@@ -5,15 +5,15 @@ import { Monitor, Play, Square, RefreshCw, Cpu, HardDrive } from 'lucide-react';
 import VncViewer from '@/components/VncViewer';
 
 interface ContainerInfo {
-  ID: string;
-  Name: string;
-  AccountID: number;
-  GameType: string;
-  Status: string;
-  VNCPort: number;
-  CPUPercent: number;
-  MemoryMB: number;
-  Hostname: string;
+  id: string;
+  name: string;
+  account_id: number;
+  game_type: string;
+  status: string;
+  vnc_port: number;
+  cpu_percent: number;
+  memory_mb: number;
+  hostname: string;
 }
 
 async function fetchSandboxes(): Promise<ContainerInfo[]> {
@@ -54,8 +54,8 @@ export default function SandboxMonitor() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sandboxes'] }),
   });
 
-  const totalCPU = containers?.reduce((s, c) => s + c.CPUPercent, 0) ?? 0;
-  const totalRAM = containers?.reduce((s, c) => s + c.MemoryMB, 0) ?? 0;
+  const totalCPU = containers?.reduce((s, c) => s + c.cpu_percent, 0) ?? 0;
+  const totalRAM = containers?.reduce((s, c) => s + c.memory_mb, 0) ?? 0;
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -76,7 +76,7 @@ export default function SandboxMonitor() {
           </div>
           <div>
             <p className="text-xs text-text-muted uppercase tracking-wider">Running</p>
-            <p className="text-xl font-bold">{containers?.filter(c => c.Status === 'running').length ?? 0}</p>
+            <p className="text-xl font-bold">{containers?.filter(c => c.status === 'running').length ?? 0}</p>
           </div>
         </div>
         <div className="card flex items-center gap-3">
@@ -135,54 +135,54 @@ export default function SandboxMonitor() {
                 </td></tr>
               ) : containers.map((c) => (
                 <tr
-                  key={c.ID}
+                  key={c.id}
                   className={cn(
                     'border-b border-border-default hover:bg-bg-tertiary transition-colors',
-                    selectedVNC === c.VNCPort && 'bg-accent/5'
+                    selectedVNC === c.vnc_port && 'bg-accent/5'
                   )}
                 >
                   <td className="py-2.5 px-4">
                     <div>
-                      <p className="text-sm font-medium font-mono">{c.Name}</p>
-                      <p className="text-[11px] text-text-muted">{c.Hostname}</p>
+                      <p className="text-sm font-medium font-mono">{c.name}</p>
+                      <p className="text-[11px] text-text-muted">{c.hostname}</p>
                     </div>
                   </td>
                   <td className="py-2.5 px-4">
                     <span className={cn(
                       'badge',
-                      c.GameType === 'cs2' ? 'bg-game-cs2/15 text-game-cs2' : 'bg-game-dota2/15 text-game-dota2'
+                      c.game_type === 'cs2' ? 'bg-game-cs2/15 text-game-cs2' : 'bg-game-dota2/15 text-game-dota2'
                     )}>
-                      {c.GameType.toUpperCase()}
+                      {c.game_type.toUpperCase()}
                     </span>
                   </td>
                   <td className="py-2.5 px-4">
                     <span className={cn(
                       'badge',
-                      c.Status === 'running' ? 'bg-status-active/15 text-status-active' : 'bg-status-idle/15 text-status-idle'
+                      c.status === 'running' ? 'bg-status-active/15 text-status-active' : 'bg-status-idle/15 text-status-idle'
                     )}>
                       <span className={cn(
                         'w-1.5 h-1.5 rounded-full mr-1.5',
-                        c.Status === 'running' ? 'bg-status-active animate-pulse-slow' : 'bg-status-idle'
+                        c.status === 'running' ? 'bg-status-active animate-pulse-slow' : 'bg-status-idle'
                       )} />
-                      {c.Status}
+                      {c.status}
                     </span>
                   </td>
-                  <td className="py-2.5 px-4 text-right font-mono text-sm">{c.CPUPercent.toFixed(1)}%</td>
-                  <td className="py-2.5 px-4 text-right font-mono text-sm">{c.MemoryMB} MB</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-sm">{c.cpu_percent.toFixed(1)}%</td>
+                  <td className="py-2.5 px-4 text-right font-mono text-sm">{c.memory_mb} MB</td>
                   <td className="py-2.5 px-4 text-center">
                     <button
-                      onClick={() => setSelectedVNC(c.VNCPort === selectedVNC ? null : c.VNCPort)}
+                      onClick={() => setSelectedVNC(c.vnc_port === selectedVNC ? null : c.vnc_port)}
                       className={cn(
                         'text-xs px-2 py-1 rounded',
-                        selectedVNC === c.VNCPort ? 'bg-accent text-white' : 'btn-ghost'
+                        selectedVNC === c.vnc_port ? 'bg-accent text-white' : 'btn-ghost'
                       )}
                     >
-                      :{c.VNCPort}
+                      :{c.vnc_port}
                     </button>
                   </td>
                   <td className="py-2.5 px-4 text-right">
                     <button
-                      onClick={() => stopMutation.mutate(c.AccountID)}
+                      onClick={() => stopMutation.mutate(c.account_id)}
                       className="btn-danger text-xs px-2 py-1"
                     >
                       <Square className="w-3 h-3" />

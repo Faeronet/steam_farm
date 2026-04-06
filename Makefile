@@ -1,25 +1,33 @@
-.PHONY: all build server desktop dev db-up db-down migrate test clean
+.PHONY: all build server desktop sandbox dev db-up db-down migrate test clean
 
 all: build
 
 # Build targets
-build: server desktop
+build: sandbox server desktop
 
 server:
 	go build -o bin/sfarm-server ./cmd/server
 
-desktop:
-	cd desktop && wails build -platform linux/amd64
+sandbox:
+	cd sandbox-core && cargo build --release
+	mkdir -p bin
+	cp sandbox-core/target/release/sfarm-sandbox bin/sfarm-sandbox
+
+desktop: sandbox
+	cd web && npm install && npm run build
+	mkdir -p cmd/desktop/dist
+	cp -r web/dist/* cmd/desktop/dist/
+	go build -o bin/sfarm-desktop ./cmd/desktop
 
 # Development
 dev: db-up
 	go run ./cmd/server
 
 db-up:
-	docker-compose up -d postgres
+	docker compose up -d postgres
 
 db-down:
-	docker-compose down
+	docker compose down
 
 migrate:
 	go run ./cmd/server  # migrations run on startup
@@ -28,8 +36,7 @@ migrate:
 deps:
 	go mod tidy
 	cd web && npm install
-	cd desktop/frontend && npm install
-	cd shared-ui && npm install
+	cd sandbox-core && cargo fetch
 
 # Generate protobuf
 proto:
@@ -46,15 +53,10 @@ lint:
 # Clean
 clean:
 	rm -rf bin/
-	rm -rf desktop/build/bin/
-
-# Docker
-docker-build:
-	docker build -f Dockerfile.server -t sfarm-server .
+	rm -rf sandbox-core/target/
+	rm -rf web/dist/
+	rm -rf cmd/desktop/dist/
 
 # Install tools
 tools:
 	go install github.com/golang-migrate/migrate/v4/cmd/migrate@latest
-	go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest

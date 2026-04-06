@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -17,36 +19,38 @@ const (
 )
 
 type ContainerInfo struct {
-	ID            string
-	Name          string
-	AccountID     int64
-	GameType      string
-	Status        ContainerStatus
-	MachineID     string
-	MACAddress    string
-	Hostname      string
-	VNCPort       int
-	CPUPercent    float64
-	MemoryMB      int
-	Display       string
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	AccountID  int64           `json:"account_id"`
+	GameType   string          `json:"game_type"`
+	Status     ContainerStatus `json:"status"`
+	MachineID  string          `json:"machine_id"`
+	MACAddress string          `json:"mac_address"`
+	Hostname   string          `json:"hostname"`
+	VNCPort    int             `json:"vnc_port"`
+	CPUPercent float64         `json:"cpu_percent"`
+	MemoryMB   int             `json:"memory_mb"`
+	Display    string          `json:"display"`
 }
 
 type Manager struct {
 	mu         sync.RWMutex
 	containers map[int64]*ContainerInfo
-	docker     *DockerClient
+	instances  map[int64]*NativeInstance
+	native     *NativeClient
 	maxSlots   int
 }
 
 func NewManager(maxSlots int) (*Manager, error) {
-	dc, err := NewDockerClient()
+	nc, err := NewNativeClient()
 	if err != nil {
-		return nil, fmt.Errorf("docker client: %w", err)
+		return nil, fmt.Errorf("native sandbox client: %w", err)
 	}
 
 	return &Manager{
 		containers: make(map[int64]*ContainerInfo),
-		docker:     dc,
+		instances:  make(map[int64]*NativeInstance),
+		native:     nc,
 		maxSlots:   maxSlots,
 	}, nil
 }
@@ -65,71 +69,116 @@ func (m *Manager) Launch(ctx context.Context, accountID int64, gameType string, 
 
 	machineID := GenerateMachineID()
 	hostname := fmt.Sprintf("farm-bot-%d", accountID)
-	vncPort := 5900 + len(m.containers)
+	slotIndex := len(m.containers)
+	vncPort := 5900 + slotIndex
+	displayNum := 100 + slotIndex
 
-	config := ContainerConfig{
-		Name:      fmt.Sprintf("sfarm-%s-%d", gameType, accountID),
-		GameType:  gameType,
-		MachineID: machineID,
-		Hostname:  hostname,
-		VNCPort:   vncPort,
-		Display:   ":99",
-		Username:  username,
-		Password:  password,
+	tmpl := GetTemplate(gameType)
+	launchOpts := ""
+	if tmpl != nil {
+		launchOpts = tmpl.LaunchOpts
 	}
 
-	containerID, err := m.docker.CreateAndStart(ctx, config)
+	cfg := SandboxConfig{
+		ID:         uint64(accountID),
+		Game:       gameType,
+		Username:   username,
+		Password:   password,
+		VNCPort:    uint16(vncPort),
+		Display:    uint16(displayNum),
+		LaunchOpts: launchOpts,
+	}
+
+	instance, err := m.native.Launch(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("launch container: %w", err)
+		return nil, fmt.Errorf("launch sandbox: %w", err)
 	}
 
 	info := &ContainerInfo{
-		ID:        containerID,
-		Name:      config.Name,
+		ID:        fmt.Sprintf("sandbox-%d", accountID),
+		Name:      fmt.Sprintf("sfarm-%s-%d", gameType, accountID),
 		AccountID: accountID,
 		GameType:  gameType,
 		Status:    ContainerRunning,
 		MachineID: machineID,
 		Hostname:  hostname,
 		VNCPort:   vncPort,
-		Display:   ":99",
+		Display:   fmt.Sprintf(":%d", displayNum),
 	}
 
 	m.containers[accountID] = info
-	log.Printf("[Sandbox] Launched %s for account %d (container: %s)", gameType, accountID, containerID[:12])
+	m.instances[accountID] = instance
 
+	go m.watchInstance(accountID, instance)
+
+	log.Printf("[Sandbox] Launched %s for account %d (vnc: %d, display: :%d)", gameType, accountID, vncPort, displayNum)
 	return info, nil
+}
+
+func (m *Manager) watchInstance(accountID int64, inst *NativeInstance) {
+	for ev := range inst.Events() {
+		switch ev.Event {
+		case "stats":
+			m.mu.Lock()
+			if info, ok := m.containers[accountID]; ok {
+				info.CPUPercent = ev.CPU
+				info.MemoryMB = int(ev.MemoryMB)
+			}
+			m.mu.Unlock()
+		case "exited":
+			m.mu.Lock()
+			if info, ok := m.containers[accountID]; ok {
+				info.Status = ContainerStopped
+			}
+			delete(m.instances, accountID)
+			m.mu.Unlock()
+			log.Printf("[Sandbox] Instance for account %d exited (code=%d)", accountID, ev.Code)
+		case "error":
+			m.mu.Lock()
+			if info, ok := m.containers[accountID]; ok {
+				info.Status = ContainerError
+			}
+			m.mu.Unlock()
+			log.Printf("[Sandbox] Error for account %d: %s", accountID, ev.Message)
+		}
+	}
 }
 
 func (m *Manager) Stop(ctx context.Context, accountID int64) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	inst, hasInst := m.instances[accountID]
+	_, hasCont := m.containers[accountID]
+	m.mu.Unlock()
 
-	info, exists := m.containers[accountID]
-	if !exists {
+	if !hasCont {
 		return fmt.Errorf("no sandbox for account %d", accountID)
 	}
 
-	if err := m.docker.Stop(ctx, info.ID); err != nil {
-		return err
+	if hasInst {
+		inst.Kill()
+	}
+	if err := m.native.Stop(uint64(accountID)); err != nil {
+		log.Printf("[Sandbox] Stop command failed for %d: %v (process may have already exited)", accountID, err)
 	}
 
-	if err := m.docker.Remove(ctx, info.ID); err != nil {
-		log.Printf("[Sandbox] Failed to remove container %s: %v", info.ID[:12], err)
-	}
-
+	m.mu.Lock()
 	delete(m.containers, accountID)
+	delete(m.instances, accountID)
+	m.mu.Unlock()
+
 	return nil
 }
 
 func (m *Manager) StopAll(ctx context.Context) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	ids := make([]int64, 0, len(m.containers))
+	for id := range m.containers {
+		ids = append(ids, id)
+	}
+	m.mu.Unlock()
 
-	for accountID, info := range m.containers {
-		_ = m.docker.Stop(ctx, info.ID)
-		_ = m.docker.Remove(ctx, info.ID)
-		delete(m.containers, accountID)
+	for _, id := range ids {
+		_ = m.Stop(ctx, id)
 	}
 }
 
@@ -149,6 +198,34 @@ func (m *Manager) Get(accountID int64) (*ContainerInfo, bool) {
 	defer m.mu.RUnlock()
 	info, exists := m.containers[accountID]
 	return info, exists
+}
+
+func (m *Manager) GetStats(accountID int64) *ContainerStats {
+	m.mu.RLock()
+	inst, ok := m.instances[accountID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return &ContainerStats{Running: false, Status: "stopped"}
+	}
+	return inst.Stats()
+}
+
+func findSteamPaths() (appsCommon string, steamRoot string) {
+	home, _ := os.UserHomeDir()
+	roots := []string{
+		filepath.Join(home, "snap/steam/common/.local/share/Steam"),
+		filepath.Join(home, ".local/share/Steam"),
+		filepath.Join(home, ".steam/steam"),
+		filepath.Join(home, ".steam/debian-installation"),
+	}
+	for _, root := range roots {
+		common := filepath.Join(root, "steamapps/common")
+		if info, err := os.Stat(common); err == nil && info.IsDir() {
+			return common, root
+		}
+	}
+	return "", ""
 }
 
 func (m *Manager) ActiveCount() int {

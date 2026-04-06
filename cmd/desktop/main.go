@@ -53,7 +53,7 @@ func main() {
 	var sandboxMgr *sandbox.Manager
 	sandboxMgr, err = sandbox.NewManager(clientCfg.MaxSandboxes)
 	if err != nil {
-		log.Printf("WARNING: Sandbox manager unavailable (Docker not running?): %v", err)
+		log.Printf("WARNING: Sandbox manager unavailable: %v", err)
 		log.Println("Protocol-only mode enabled. Sandbox features disabled.")
 	}
 
@@ -112,9 +112,9 @@ func main() {
 	fmt.Println("╠═══════════════════════════════════════════════════╣")
 	fmt.Printf("║  UI:        %-37s ║\n", appURL)
 	if sandboxMgr != nil {
-		fmt.Printf("║  Sandbox:   Docker OK, max %d containers            ║\n", clientCfg.MaxSandboxes)
+		fmt.Printf("║  Sandbox:   Native OK, max %d instances              ║\n", clientCfg.MaxSandboxes)
 	} else {
-		fmt.Println("║  Sandbox:   UNAVAILABLE (no Docker)                ║")
+		fmt.Println("║  Sandbox:   UNAVAILABLE (sfarm-sandbox not found)  ║")
 	}
 	fmt.Println("║  Protocol:  Steam CM ready                        ║")
 	fmt.Println("║                                                   ║")

@@ -7,6 +7,7 @@
 /*
  * Persistent X11 input relay. Reads commands from stdin line-by-line:
  *   M dx dy          - relative mouse move
+ *   W x y            - absolute mouse warp to (x,y)
  *   B button down    - mouse button press (1=left,2=mid,3=right)
  *   b button up      - mouse button release
  *   K keysym down    - key press
@@ -33,6 +34,11 @@ int main(int argc, char *argv[]) {
             int dx = 0, dy = 0;
             sscanf(line + 1, "%d %d", &dx, &dy);
             XWarpPointer(d, None, None, 0, 0, 0, 0, dx, dy);
+            XFlush(d);
+        } else if (cmd == 'W') {
+            int x = 0, y = 0;
+            sscanf(line + 1, "%d %d", &x, &y);
+            XWarpPointer(d, None, DefaultRootWindow(d), 0, 0, 0, 0, x, y);
             XFlush(d);
         } else if (cmd == 'B') {
             int btn = 0;

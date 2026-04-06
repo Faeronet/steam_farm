@@ -85,6 +85,10 @@ func (s *InputSender) MouseMove(dx, dy int) {
 	s.send(fmt.Sprintf("M %d %d", dx, dy))
 }
 
+func (s *InputSender) WarpAbsolute(x, y int) {
+	s.send(fmt.Sprintf("W %d %d", x, y))
+}
+
 func (s *InputSender) MouseDown(button int) {
 	s.send(fmt.Sprintf("B %d", button))
 }

@@ -268,7 +268,7 @@ done
 # Custom steamwebhelper_sniper_wrap.sh that injects flags for headless rendering
 cat > "$STEAM_LOCAL/ubuntu12_64/steamwebhelper_sniper_wrap.sh" << 'WRAPEOF'
 #!/bin/bash
-export LD_LIBRARY_PATH=.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export LD_LIBRARY_PATH=.${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}
 echo "<6>exec ./steamwebhelper (sandbox-wrapped) $*"
 echo "<remaining-lines-assume-level=7>"
 exec ./steamwebhelper \

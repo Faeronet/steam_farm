@@ -239,10 +239,12 @@ STEAM_LOCAL="$HOME/.local/share/Steam"
 mkdir -p "$STEAM_LOCAL"
 
 # Copy steam.sh so STEAMROOT resolves to shadow dir; symlink everything else
+# config is special: create a real dir so htmlcache gets its own SingletonLock
 for item in "$STEAM_REAL"/*; do
     name=$(basename "$item")
     [ "$name" = "ubuntu12_32" ] && continue
     [ "$name" = "ubuntu12_64" ] && continue
+    [ "$name" = "config" ] && continue
     if [ "$name" = "steam.sh" ]; then
         cp "$item" "$STEAM_LOCAL/$name"
         chmod +x "$STEAM_LOCAL/$name"
@@ -251,10 +253,25 @@ for item in "$STEAM_REAL"/*; do
     fi
 done
 
-# Shadow ubuntu12_32 — symlink all files
+# Shadow config dir: own htmlcache (fresh, no stale SingletonLock), symlink the rest
+mkdir -p "$STEAM_LOCAL/config/htmlcache"
+for item in "$STEAM_REAL/config"/*; do
+    name=$(basename "$item")
+    [ "$name" = "htmlcache" ] && continue
+    ln -sfn "$item" "$STEAM_LOCAL/config/$name" 2>/dev/null
+done
+
+# Shadow ubuntu12_32 — COPY the steam binary so /proc/self/exe resolves here;
+# symlink everything else
 mkdir -p "$STEAM_LOCAL/ubuntu12_32"
 for item in "$STEAM_REAL/ubuntu12_32"/*; do
-    ln -sfn "$item" "$STEAM_LOCAL/ubuntu12_32/$(basename "$item")" 2>/dev/null
+    name=$(basename "$item")
+    if [ "$name" = "steam" ]; then
+        cp "$item" "$STEAM_LOCAL/ubuntu12_32/$name"
+        chmod +x "$STEAM_LOCAL/ubuntu12_32/$name"
+    else
+        ln -sfn "$item" "$STEAM_LOCAL/ubuntu12_32/$name" 2>/dev/null
+    fi
 done
 
 # Shadow ubuntu12_64 — symlink all except steamwebhelper_sniper_wrap.sh
@@ -265,7 +282,7 @@ for item in "$STEAM_REAL/ubuntu12_64"/*; do
     ln -sfn "$item" "$STEAM_LOCAL/ubuntu12_64/$name" 2>/dev/null
 done
 
-# Custom steamwebhelper_sniper_wrap.sh that injects flags for headless rendering
+# Custom steamwebhelper_sniper_wrap.sh: only add --no-sandbox and --disable-dev-shm-usage
 cat > "$STEAM_LOCAL/ubuntu12_64/steamwebhelper_sniper_wrap.sh" << 'WRAPEOF'
 #!/bin/bash
 export LD_LIBRARY_PATH=.${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}
@@ -274,11 +291,6 @@ echo "<remaining-lines-assume-level=7>"
 exec ./steamwebhelper \
     --no-sandbox \
     --disable-dev-shm-usage \
-    --disable-gpu-sandbox \
-    --in-process-gpu \
-    --disable-software-rasterizer \
-    --disable-gpu \
-    --no-zygote \
     "$@"
 WRAPEOF
 chmod +x "$STEAM_LOCAL/ubuntu12_64/steamwebhelper_sniper_wrap.sh"

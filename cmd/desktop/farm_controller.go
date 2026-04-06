@@ -296,7 +296,7 @@ func (fc *FarmController) startFarm(w http.ResponseWriter, r *http.Request) {
 			})
 			log.Printf("[Farm] Sandbox started for %s: container=%s vnc=%d", a.Username, info.Name, info.VNCPort)
 
-			// Auto-start CS2 bot if game type is cs2
+			// Auto-start CS2 bot if game type is cs2 (in background — Xvfb needs time)
 			if string(effectiveGame) == "cs2" && fc.autoplay != nil {
 				displayNum := 0
 				if len(info.Display) > 1 {
@@ -306,11 +306,14 @@ func (fc *FarmController) startFarm(w http.ResponseWriter, r *http.Request) {
 				if a.SteamID != nil {
 					steamIDStr = fmt.Sprintf("%d", *a.SteamID)
 				}
-				if err := fc.autoplay.StartBot(a.ID, displayNum, steamIDStr); err != nil {
-					log.Printf("[Farm] Autoplay bot failed for %s: %v", a.Username, err)
-				} else {
-					log.Printf("[Farm] Autoplay bot queued for %s (display :%d)", a.Username, displayNum)
-				}
+				username := a.Username
+				go func() {
+					if err := fc.autoplay.StartBot(a.ID, displayNum, steamIDStr); err != nil {
+						log.Printf("[Farm] Autoplay bot failed for %s: %v", username, err)
+					} else {
+						log.Printf("[Farm] Autoplay bot started for %s (display :%d)", username, displayNum)
+					}
+				}()
 			}
 
 			results = append(results, map[string]interface{}{"account_id": accID, "mode": "sandbox", "container": info.Name, "vnc_port": info.VNCPort})

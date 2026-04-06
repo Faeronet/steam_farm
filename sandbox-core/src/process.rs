@@ -220,6 +220,23 @@ export STEAM_DISABLE_BROWSER_SANDBOX=1
 export CEF_DISABLE_SANDBOX=1
 export SDL_VIDEODRIVER=x11
 
+# NVIDIA Optimus (PRIME Render Offload): force discrete GPU for games.
+export __NV_PRIME_RENDER_OFFLOAD=1
+export __NV_PRIME_RENDER_OFFLOAD_PROVIDER=NVIDIA-G0
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+export __VK_LAYER_NV_optimus=NVIDIA_only
+
+# Vulkan ICD: use snap-provided NVIDIA ICD (host path is inaccessible inside snap)
+if [ -f /var/lib/snapd/lib/vulkan/icd.d/nvidia_icd.json ]; then
+    export VK_ICD_FILENAMES=/var/lib/snapd/lib/vulkan/icd.d/nvidia_icd.json
+    export VK_DRIVER_FILES=/var/lib/snapd/lib/vulkan/icd.d/nvidia_icd.json
+fi
+
+# Ensure NVIDIA GPU libraries are reachable by games (Vulkan, GL).
+if [ -d /var/lib/snapd/lib/gl ]; then
+    export LD_LIBRARY_PATH="/var/lib/snapd/lib/gl:/var/lib/snapd/lib/gl32${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
+fi
+
 # Provide a dbus session bus via dbus-launch if available, else set a dummy socket
 if command -v dbus-daemon >/dev/null 2>&1; then
     eval "$(dbus-launch --sh-syntax 2>/dev/null)" || true
@@ -335,9 +352,13 @@ printf '#!/bin/sh\nexit 0\n' > "$HOME/bin/zenity"
 chmod +x "$HOME/bin/zenity"
 export PATH="$HOME/bin:$PATH"
 
-# Kill stale game processes from a previous sandbox run
-pkill -f 'cs2$' 2>/dev/null || true
-pkill -f 'dota2$' 2>/dev/null || true
+# Kill stale game processes from a previous sandbox run.
+# Use kill -9 on specific binaries to ensure they die (pkill -f may miss snap procs).
+for pid in $(pgrep -f 'linuxsteamrt64/cs2' 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
+for pid in $(pgrep -f 'linuxsteamrt64/dota2' 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
+for pid in $(pgrep -f 'reaper.*AppId=730' 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
+for pid in $(pgrep -f 'pv-adverb.*Counter-Strike' 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
+sleep 1
 # Remove Source 2 engine lock files
 rm -f /tmp/source_engine_*.lock 2>/dev/null
 rm -f /tmp/.com.valve.source* 2>/dev/null

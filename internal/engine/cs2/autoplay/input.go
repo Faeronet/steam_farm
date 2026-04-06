@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // X11 keysyms
@@ -48,29 +49,48 @@ func NewInputSender(display int) (*InputSender, error) {
 	}
 
 	displayStr := fmt.Sprintf(":%d", display)
-	cmd := exec.Command(relayBin, displayStr)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
-		return nil, err
-	}
-	cmd.Stderr = nil
 
-	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		return nil, fmt.Errorf("start xinput_relay: %w", err)
-	}
+	// Xvfb may not be ready yet — retry up to 30 seconds
+	var cmd *exec.Cmd
+	var stdin io.WriteCloser
+	var stdout io.ReadCloser
+	const maxAttempts = 15
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		cmd = exec.Command(relayBin, displayStr)
+		var errS error
+		stdin, errS = cmd.StdinPipe()
+		if errS != nil {
+			return nil, errS
+		}
+		stdout, errS = cmd.StdoutPipe()
+		if errS != nil {
+			stdin.Close()
+			return nil, errS
+		}
+		cmd.Stderr = nil
 
-	reader := bufio.NewReader(stdout)
-	line, _ := reader.ReadString('\n')
-	if !strings.Contains(line, "READY") {
+		if errS = cmd.Start(); errS != nil {
+			stdin.Close()
+			if attempt == maxAttempts {
+				return nil, fmt.Errorf("start xinput_relay after %d attempts: %w", maxAttempts, errS)
+			}
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		reader := bufio.NewReader(stdout)
+		line, _ := reader.ReadString('\n')
+		if strings.Contains(line, "READY") {
+			break
+		}
 		stdin.Close()
 		cmd.Process.Kill()
-		return nil, fmt.Errorf("xinput_relay did not report READY")
+		cmd.Wait()
+
+		if attempt == maxAttempts {
+			return nil, fmt.Errorf("xinput_relay did not report READY after %d attempts (display %s)", maxAttempts, displayStr)
+		}
+		time.Sleep(2 * time.Second)
 	}
 
 	s := &InputSender{cmd: cmd, stdin: stdin, done: make(chan struct{})}

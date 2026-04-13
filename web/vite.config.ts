@@ -2,6 +2,14 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
+// Должен совпадать с cmd/server (HTTP_PORT, по умолчанию 8080). Иначе Vite шлёт /api на не тот порт → 404.
+const apiOrigin = process.env.VITE_API_ORIGIN ?? 'http://127.0.0.1:8080';
+const wsTarget = (() => {
+  const u = new URL(apiOrigin);
+  u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+  return u.toString();
+})();
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -29,9 +37,9 @@ export default defineConfig({
     // иначе Vite может отклонять запросы по IP/домену
     allowedHosts: true,
     proxy: {
-      '/api': 'http://127.0.0.1:8085',
+      '/api': apiOrigin,
       '/ws': {
-        target: 'ws://127.0.0.1:8085',
+        target: wsTarget,
         ws: true,
       },
     },

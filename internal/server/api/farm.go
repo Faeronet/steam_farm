@@ -7,6 +7,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// DesktopStartFarmRequest — тело POST /api/farm/start из web (совпадает с cmd/desktop).
+type DesktopStartFarmRequest struct {
+	AccountIDs []int64 `json:"account_ids" binding:"required,min=1"`
+	Mode       string  `json:"mode"`
+	GameType   string  `json:"game_type"`
+}
+
 type CreateSessionRequest struct {
 	Name       string  `json:"name"`
 	GameType   string  `json:"game_type" binding:"required,oneof=cs2 dota2"`
@@ -108,6 +115,99 @@ func (rt *Router) stopSession(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "stopped"})
+}
+
+// startFarmDesktopCompat создаёт farm_session и ставит аккаунты в queued (как createSession).
+// Запуск песочницы/ботов есть только в sfarm-desktop; здесь — чтобы UI не получал 404.
+func (rt *Router) startFarmDesktopCompat(c *gin.Context) {
+	var req DesktopStartFarmRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ctx := c.Request.Context()
+
+	var gameType, farmMode string
+	err := rt.db.Pool.QueryRow(ctx,
+		`SELECT game_type::text, farm_mode::text FROM accounts WHERE id = $1`, req.AccountIDs[0],
+	).Scan(&gameType, &farmMode)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "account not found"})
+		return
+	}
+	if req.GameType != "" {
+		gameType = req.GameType
+	}
+	if req.Mode != "" {
+		farmMode = req.Mode
+	}
+	if gameType != "cs2" && gameType != "dota2" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid game_type"})
+		return
+	}
+	if farmMode != "protocol" && farmMode != "sandbox" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid farm mode"})
+		return
+	}
+
+	var id int64
+	err = rt.db.Pool.QueryRow(ctx,
+		`INSERT INTO farm_sessions (name, game_type, farm_mode, account_ids, config)
+		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		nilIfEmpty(""), gameType, farmMode, req.AccountIDs, "{}",
+	).Scan(&id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	results := make([]map[string]interface{}, 0, len(req.AccountIDs))
+	for _, accID := range req.AccountIDs {
+		tag, err := rt.db.Pool.Exec(ctx,
+			`UPDATE accounts SET status = 'queued', updated_at = NOW() WHERE id = $1`, accID)
+		if err != nil {
+			results = append(results, map[string]interface{}{"account_id": accID, "error": err.Error()})
+			continue
+		}
+		if tag.RowsAffected() == 0 {
+			results = append(results, map[string]interface{}{"account_id": accID, "error": "not found"})
+			continue
+		}
+		results = append(results, map[string]interface{}{
+			"account_id": accID,
+			"mode":       farmMode,
+			"status":     "queued",
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"results": results, "session_id": id})
+}
+
+func (rt *Router) stopFarmDesktopCompat(c *gin.Context) {
+	var req struct {
+		AccountIDs []int64 `json:"account_ids" binding:"required,min=1"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ctx := c.Request.Context()
+	for _, accID := range req.AccountIDs {
+		_, _ = rt.db.Pool.Exec(ctx,
+			`UPDATE accounts SET status='idle', status_detail='stopped', updated_at=NOW() WHERE id=$1`, accID)
+		_, _ = rt.db.Pool.Exec(ctx,
+			`UPDATE sandboxes SET status='stopped', updated_at=NOW() WHERE account_id=$1`, accID)
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "stopped"})
+}
+
+func (rt *Router) stopAllFarmDesktopCompat(c *gin.Context) {
+	ctx := c.Request.Context()
+	_, _ = rt.db.Pool.Exec(ctx,
+		`UPDATE accounts SET status='idle', status_detail='stopped by user', updated_at=NOW() WHERE status IN ('farming','queued')`)
+	_, _ = rt.db.Pool.Exec(ctx,
+		`UPDATE sandboxes SET status='stopped', updated_at=NOW() WHERE status='running'`)
+	c.JSON(http.StatusOK, gin.H{"status": "all stopped"})
 }
 
 func (rt *Router) farmStatus(c *gin.Context) {

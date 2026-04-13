@@ -51,6 +51,11 @@ func (r *Router) setupRoutes() {
 
 		farm := api.Group("/farm")
 		{
+			// Тот же контракт, что у cmd/desktop (web UI / Vite proxy → часто идёт на cmd/server).
+			farm.POST("/start", r.startFarmDesktopCompat)
+			farm.POST("/stop", r.stopFarmDesktopCompat)
+			farm.POST("/stop-all", r.stopAllFarmDesktopCompat)
+
 			farm.POST("/sessions", r.createSession)
 			farm.GET("/sessions", r.listSessions)
 			farm.POST("/sessions/:id/stop", r.stopSession)

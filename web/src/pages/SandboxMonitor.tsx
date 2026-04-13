@@ -1,9 +1,19 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { cn } from '@/lib/utils';
 import { Monitor, Play, Square, RefreshCw, Cpu, HardDrive, Maximize2, Minimize2, X, Crosshair, Bot, Heart, Clock, Gamepad2 } from 'lucide-react';
-import VncViewer from '@/components/VncViewer';
 import FpsInputOverlay from '@/components/FpsInputOverlay';
+
+// novnc только здесь — ленивый чанк, иначе весь entry ломается в dev (белый экран на всех маршрутах).
+const VncViewer = lazy(() => import('@/components/VncViewer'));
+
+function VncChunkFallback({ className }: { className?: string }) {
+  return (
+    <div className={cn('flex items-center justify-center bg-black text-xs text-text-muted', className)}>
+      VNC…
+    </div>
+  );
+}
 
 interface ContainerInfo {
   id: string;
@@ -150,12 +160,14 @@ function VncFullscreenModal({ port, display, onClose }: { port: number; display:
 
       {/* VNC Canvas + FPS overlay */}
       <div className="flex-1 relative overflow-hidden">
-        <VncViewer
-          key={`fullscreen-${port}`}
-          port={port}
-          viewOnly={fpsMode}
-          className="w-full h-full relative"
-        />
+        <Suspense fallback={<VncChunkFallback className="absolute inset-0" />}>
+          <VncViewer
+            key={`fullscreen-${port}`}
+            port={port}
+            viewOnly={fpsMode}
+            className="w-full h-full relative"
+          />
+        </Suspense>
         <FpsInputOverlay
           display={displayNum}
           active={fpsMode}
@@ -358,12 +370,14 @@ export default function SandboxMonitor() {
             return (
             <div className="space-y-2">
               <div className="bg-black rounded-lg border border-border-default aspect-[4/3] relative overflow-hidden">
-                <VncViewer
-                  key={selectedVNC}
-                  port={selectedVNC}
-                  viewOnly={true}
-                  className="w-full h-full relative"
-                />
+                <Suspense fallback={<VncChunkFallback className="absolute inset-0 rounded-lg" />}>
+                  <VncViewer
+                    key={selectedVNC}
+                    port={selectedVNC}
+                    viewOnly={true}
+                    className="w-full h-full relative"
+                  />
+                </Suspense>
               </div>
               <button
                 onClick={() => setFullscreenVNC({ port: selectedVNC, display: displayStr })}

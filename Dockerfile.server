@@ -1,4 +1,7 @@
+# go.mod: go 1.25+. Образ golang:1.22 + GOTOOLCHAIN=auto — при сборке подтянется нужный toolchain Go.
 FROM golang:1.22-alpine AS builder
+
+ENV GOTOOLCHAIN=auto
 
 RUN apk add --no-cache git
 
@@ -9,7 +12,8 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /bin/sfarm-server ./cmd/server
 
-FROM node:18-alpine AS frontend
+# web/package.json: react-router и др. требуют Node >= 20
+FROM node:20-alpine AS frontend
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci

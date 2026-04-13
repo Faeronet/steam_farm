@@ -12,7 +12,9 @@ export default defineConfig({
   build: {
     target: 'esnext',
   },
+  // @novnc/novnc 1.6+ использует top-level await в CJS — esbuild при pre-bundle падает на require(...).
   optimizeDeps: {
+    exclude: ['@novnc/novnc'],
     esbuildOptions: {
       target: 'esnext',
     },

@@ -11,12 +11,15 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/faeronet/steam-farm-system/internal/common"
 	"github.com/faeronet/steam-farm-system/internal/database"
 	"github.com/faeronet/steam-farm-system/internal/engine"
+	"github.com/faeronet/steam-farm-system/internal/engine/cs2/autoplay"
 	"github.com/faeronet/steam-farm-system/internal/engine/sandbox"
 	"github.com/faeronet/steam-farm-system/internal/server/ws"
 )
@@ -24,12 +27,101 @@ import (
 //go:embed dist
 var distFS embed.FS
 
+// Сброс артефактов памяти CS2 от прошлых запусков (JSONL диагностики + каталоги дампа libclient).
+func clearCS2MemLogArtifacts() {
+	_ = os.Remove("/tmp/sfarm_cs2_mem_diag.jsonl")
+	entries, err := os.ReadDir("/tmp")
+	if err != nil {
+		return
+	}
+	const prefix = "sfarm_cs2_module_"
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), prefix) {
+			_ = os.RemoveAll(filepath.Join("/tmp", e.Name()))
+		}
+	}
+}
+
+// Дамп libclient в /tmp при первом init драйвера. По умолчанию вкл.; выкл: SFARM_CS2_MEM_MODULE_DUMP=0|off|false
+func applyDefaultCS2MemModuleDump() {
+	v, set := os.LookupEnv("SFARM_CS2_MEM_MODULE_DUMP")
+	if !set {
+		_ = os.Setenv("SFARM_CS2_MEM_MODULE_DUMP", "/tmp")
+		return
+	}
+	s := strings.TrimSpace(v)
+	if s == "0" || strings.EqualFold(s, "off") || strings.EqualFold(s, "false") || strings.EqualFold(s, "no") {
+		_ = os.Unsetenv("SFARM_CS2_MEM_MODULE_DUMP")
+	}
+}
+
+// Диагностика чтения CS2 (JSONL). По умолчанию включена в desktop; выкл: SFARM_CS2_MEM_DIAG=0|off|false
+func applyDefaultCS2MemDiag() {
+	v, set := os.LookupEnv("SFARM_CS2_MEM_DIAG")
+	if !set {
+		_ = os.Setenv("SFARM_CS2_MEM_DIAG", "/tmp/sfarm_cs2_mem_diag.jsonl")
+	} else {
+		s := strings.TrimSpace(v)
+		if s == "0" || strings.EqualFold(s, "off") || strings.EqualFold(s, "false") || strings.EqualFold(s, "no") {
+			_ = os.Unsetenv("SFARM_CS2_MEM_DIAG")
+			_ = os.Unsetenv("SFARM_CS2_MEM_DIAG_MS")
+			return
+		}
+	}
+	if _, set := os.LookupEnv("SFARM_CS2_MEM_DIAG_MS"); !set {
+		_ = os.Setenv("SFARM_CS2_MEM_DIAG_MS", "15.6")
+	}
+}
+
+// Локальный HTTP-снимок libclient (127.0.0.1:17355). По умолчанию вкл.; выкл: SFARM_CS2_MEM_DEBUG_HTTP=0
+func applyDefaultCS2MemDebugHTTP() {
+	v, set := os.LookupEnv("SFARM_CS2_MEM_DEBUG_HTTP")
+	if !set {
+		_ = os.Setenv("SFARM_CS2_MEM_DEBUG_HTTP", "1")
+	} else {
+		s := strings.TrimSpace(v)
+		if s == "0" || strings.EqualFold(s, "off") || strings.EqualFold(s, "false") || strings.EqualFold(s, "no") {
+			_ = os.Unsetenv("SFARM_CS2_MEM_DEBUG_HTTP")
+			_ = os.Unsetenv("SFARM_CS2_MEM_DEBUG_MS")
+			return
+		}
+	}
+	if _, set := os.LookupEnv("SFARM_CS2_MEM_DEBUG_MS"); !set {
+		_ = os.Setenv("SFARM_CS2_MEM_DEBUG_MS", "15.6")
+	}
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	clearCS2MemLogArtifacts()
+
 	cfg := common.LoadServerConfig()
 	clientCfg := common.LoadClientConfig()
+
+	// Окно VNC с ROI и боксами; отключить: SFARM_YOLO_PREVIEW=0
+	if _, ok := os.LookupEnv("SFARM_YOLO_PREVIEW"); !ok {
+		_ = os.Setenv("SFARM_YOLO_PREVIEW", "1")
+	}
+	applyDefaultCS2MemModuleDump()
+	applyDefaultCS2MemDiag()
+	applyDefaultCS2MemDebugHTTP()
+	if p := strings.TrimSpace(os.Getenv("SFARM_CS2_MEM_MODULE_DUMP")); p != "" {
+		log.Printf("[desktop] CS2 module dump parent → %q (off: SFARM_CS2_MEM_MODULE_DUMP=0)", p)
+	}
+	if p := strings.TrimSpace(os.Getenv("SFARM_CS2_MEM_DIAG")); p != "" {
+		log.Printf("[desktop] CS2 mem diag → %q (SFARM_CS2_MEM_DIAG_MS=%s); off: SFARM_CS2_MEM_DIAG=0",
+			p, strings.TrimSpace(os.Getenv("SFARM_CS2_MEM_DIAG_MS")))
+	}
+	if p := strings.TrimSpace(os.Getenv("SFARM_CS2_MEM_DEBUG_HTTP")); p != "" {
+		log.Printf("[desktop] CS2 mem debug HTTP %q (SFARM_CS2_MEM_DEBUG_MS=%s); off: SFARM_CS2_MEM_DEBUG_HTTP=0",
+			p, strings.TrimSpace(os.Getenv("SFARM_CS2_MEM_DEBUG_MS")))
+	}
+	autoplay.StartCS2MemDebugHTTPServerIfConfigured()
 
 	db, err := database.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -57,7 +149,10 @@ func main() {
 		log.Println("Protocol-only mode enabled. Sandbox features disabled.")
 	}
 
-	farmCtrl := NewFarmController(ctx, db, botManager, sandboxMgr, wsHub, cfg, logCapture)
+	sigScanSink := NewSigScanLogSink(wsHub, 500)
+	autoplay.SigScanLogFunc = sigScanSink.Emit
+
+	farmCtrl := NewFarmController(ctx, db, botManager, sandboxMgr, wsHub, cfg, logCapture, sigScanSink)
 
 	go farmCtrl.RunMonitor(ctx)
 

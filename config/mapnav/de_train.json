@@ -1,0 +1,35 @@
+{
+  "map": "de_train",
+  "aliases": ["train"],
+  "nodes": [
+    { "x": 1020, "z": 520, "label": "t_spawn", "zone": "T_side" },
+    { "x": 620, "z": 240, "label": "t_main", "zone": "T_side" },
+    { "x": 260, "z": -40, "label": "ivy", "zone": "mid" },
+    { "x": -120, "z": -200, "label": "pop", "zone": "mid" },
+    { "x": -480, "z": 80, "label": "a_main", "zone": "A" },
+    { "x": -860, "z": 300, "label": "a_site", "zone": "A" },
+    { "x": -520, "z": -280, "label": "ct_spawn", "zone": "CT_side" },
+    { "x": -220, "z": -580, "label": "b_halls", "zone": "B" },
+    { "x": 180, "z": -720, "label": "b_site", "zone": "B" },
+    { "x": 440, "z": -480, "label": "olly", "zone": "mid" },
+    { "x": 80, "z": 320, "label": "dumpster", "zone": "mid" },
+    { "x": -340, "z": 420, "label": "ct_a", "zone": "CT_side" },
+    { "x": 360, "z": -200, "label": "t_con", "zone": "T_side" },
+    { "x": -680, "z": -120, "label": "electrics", "zone": "CT_side" }
+  ],
+  "edges": [
+    [0, 1], [0, 10],
+    [1, 2], [1, 10], [1, 12],
+    [2, 3], [2, 11], [2, 12],
+    [3, 4], [3, 7], [3, 13],
+    [4, 5], [4, 11], [4, 12],
+    [5, 12], [5, 13],
+    [6, 7], [6, 13], [6, 12],
+    [7, 8], [7, 9],
+    [8, 9],
+    [9, 12], [9, 2],
+    [10, 11],
+    [11, 4],
+    [12, 3], [13, 4], [13, 5]
+  ]
+}

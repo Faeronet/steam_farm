@@ -1,0 +1,39 @@
+{
+  "map": "de_nuke",
+  "aliases": ["nuke"],
+  "nodes": [
+    { "x": -1180, "z": 420, "label": "t_out", "zone": "T_side" },
+    { "x": -820, "z": 180, "label": "t_roof", "zone": "T_side" },
+    { "x": -480, "z": -80, "label": "outside", "zone": "mid" },
+    { "x": -180, "z": -320, "label": "secret", "zone": "mid" },
+    { "x": 180, "z": -520, "label": "ramp", "zone": "CT_side" },
+    { "x": -20, "z": 220, "label": "hut", "zone": "mid" },
+    { "x": 320, "z": 120, "label": "squeaky", "zone": "CT_side" },
+    { "x": 520, "z": -180, "label": "a_upper", "zone": "A" },
+    { "x": 220, "z": -820, "label": "a_lower", "zone": "A" },
+    { "x": -380, "z": -880, "label": "ct_out", "zone": "CT_side" },
+    { "x": -620, "z": -480, "label": "mini", "zone": "CT_side" },
+    { "x": -880, "z": -220, "label": "lobby", "zone": "mid" },
+    { "x": -1040, "z": -640, "label": "lower_enter", "zone": "B" },
+    { "x": -720, "z": -1020, "label": "toxic", "zone": "B" },
+    { "x": -380, "z": -1180, "label": "decon", "zone": "B" },
+    { "x": 80, "z": -1180, "label": "b_site", "zone": "B" }
+  ],
+  "edges": [
+    [0, 1], [0, 12],
+    [1, 2], [1, 5],
+    [2, 3], [2, 5], [2, 11],
+    [3, 4], [3, 11],
+    [4, 6], [4, 7], [4, 8], [4, 9],
+    [5, 6],
+    [6, 7],
+    [7, 8],
+    [8, 9],
+    [9, 10],
+    [10, 11], [10, 13],
+    [11, 12],
+    [12, 0], [12, 13],
+    [13, 14], [13, 15],
+    [14, 15]
+  ]
+}

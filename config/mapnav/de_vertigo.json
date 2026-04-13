@@ -1,0 +1,34 @@
+{
+  "map": "de_vertigo",
+  "aliases": ["vertigo"],
+  "nodes": [
+    { "x": -920, "z": 560, "label": "t_spawn", "zone": "T_side" },
+    { "x": -520, "z": 320, "label": "t_mid", "zone": "T_side" },
+    { "x": -180, "z": 80, "label": "elev_mid", "zone": "mid" },
+    { "x": 220, "z": -80, "label": "crane", "zone": "mid" },
+    { "x": -380, "z": -280, "label": "a_ramp", "zone": "A" },
+    { "x": -720, "z": -480, "label": "a_site", "zone": "A" },
+    { "x": -40, "z": -620, "label": "ladder_mid", "zone": "mid" },
+    { "x": 420, "z": -520, "label": "b_stairs", "zone": "B" },
+    { "x": 180, "z": -980, "label": "b_site", "zone": "B" },
+    { "x": -200, "z": -1040, "label": "ct_b", "zone": "CT_side" },
+    { "x": 540, "z": -200, "label": "ct_spawn_side", "zone": "CT_side" },
+    { "x": 320, "z": 200, "label": "ct_a_side", "zone": "CT_side" },
+    { "x": -600, "z": -40, "label": "scaffold", "zone": "mid" },
+    { "x": 60, "z": 400, "label": "skywalk", "zone": "mid" }
+  ],
+  "edges": [
+    [0, 1], [0, 13],
+    [1, 2], [1, 12],
+    [2, 3], [2, 12], [2, 13],
+    [3, 4], [3, 7], [3, 10], [3, 11],
+    [4, 5], [4, 6],
+    [5, 6], [5, 9],
+    [6, 7], [6, 9],
+    [7, 8], [7, 10],
+    [8, 9],
+    [9, 10],
+    [10, 11],
+    [11, 13], [12, 4]
+  ]
+}

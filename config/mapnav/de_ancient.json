@@ -1,0 +1,38 @@
+{
+  "map": "de_ancient",
+  "aliases": ["ancient"],
+  "nodes": [
+    { "x": 1120, "z": 640, "label": "t_spawn", "zone": "T_side" },
+    { "x": 720, "z": 380, "label": "t_main", "zone": "T_side" },
+    { "x": 380, "z": 120, "label": "cave", "zone": "mid" },
+    { "x": 20, "z": -80, "label": "mid", "zone": "mid" },
+    { "x": -360, "z": 180, "label": "donut", "zone": "mid" },
+    { "x": -720, "z": 420, "label": "a_main", "zone": "A" },
+    { "x": -1040, "z": 220, "label": "a_site", "zone": "A" },
+    { "x": -680, "z": -120, "label": "ct_a", "zone": "CT_side" },
+    { "x": 480, "z": -420, "label": "b_ramp", "zone": "mid" },
+    { "x": 100, "z": -680, "label": "elbow", "zone": "mid" },
+    { "x": -280, "z": -520, "label": "b_doors", "zone": "B" },
+    { "x": -620, "z": -760, "label": "b_site", "zone": "B" },
+    { "x": -200, "z": -1000, "label": "ct_b", "zone": "CT_side" },
+    { "x": 200, "z": 420, "label": "ruins", "zone": "T_side" },
+    { "x": -420, "z": -240, "label": "house", "zone": "mid" },
+    { "x": -880, "z": -480, "label": "ct_spawn", "zone": "CT_side" }
+  ],
+  "edges": [
+    [0, 1], [0, 13],
+    [1, 2], [1, 13],
+    [2, 3], [2, 8],
+    [3, 4], [3, 8], [3, 14],
+    [4, 5], [4, 7], [4, 14],
+    [5, 6], [5, 7],
+    [6, 7],
+    [7, 15], [7, 14],
+    [8, 9], [8, 13],
+    [9, 10], [9, 11],
+    [10, 11], [10, 14],
+    [11, 12], [11, 15],
+    [12, 15],
+    [13, 2], [14, 11]
+  ]
+}

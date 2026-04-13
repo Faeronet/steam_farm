@@ -4,7 +4,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::ipc::LaunchConfig;
+use crate::proc_kill;
 use crate::steam::{self, SteamPaths};
+use nix::sys::signal::Signal;
 
 fn self_dir() -> PathBuf {
     std::env::current_exe()
@@ -353,17 +355,32 @@ chmod +x "$HOME/bin/zenity"
 export PATH="$HOME/bin:$PATH"
 
 # Kill stale game processes from a previous sandbox run.
-# Use kill -9 on specific binaries to ensure they die (pkill -f may miss snap procs).
-for pid in $(pgrep -f 'linuxsteamrt64/cs2' 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
-for pid in $(pgrep -f 'linuxsteamrt64/dota2' 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
-for pid in $(pgrep -f 'reaper.*AppId=730' 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
-for pid in $(pgrep -f 'pv-adverb.*Counter-Strike' 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
-sleep 1
+# IMPORTANT: exclude our own process tree to avoid self-kill
+# (pgrep -f matches the entire cmdline including this inner_script).
+MY_PID=$$
+MY_PPID=$(ps -o ppid= -p $MY_PID 2>/dev/null | tr -d ' ')
+MY_PPPID=$(ps -o ppid= -p $MY_PPID 2>/dev/null | tr -d ' ')
+for pid in $(pgrep -f 'linuxsteamrt64/cs2' 2>/dev/null); do
+    [ "$pid" = "$MY_PID" ] || [ "$pid" = "$MY_PPID" ] || [ "$pid" = "$MY_PPPID" ] || kill -9 "$pid" 2>/dev/null
+done
+for pid in $(pgrep -f 'linuxsteamrt64/dota2' 2>/dev/null); do
+    [ "$pid" = "$MY_PID" ] || [ "$pid" = "$MY_PPID" ] || [ "$pid" = "$MY_PPPID" ] || kill -9 "$pid" 2>/dev/null
+done
+rm -f /tmp/source_engine_*.lock 2>/dev/null
+rm -f /tmp/.com.valve.source* 2>/dev/null
 # Remove Source 2 engine lock files
 rm -f /tmp/source_engine_*.lock 2>/dev/null
 rm -f /tmp/.com.valve.source* 2>/dev/null
 
-exec "$STEAM_LOCAL/steam.sh" {args}
+"$STEAM_LOCAL/steam.sh" {args} &
+STEAM_PID=$!
+# Keep the shell alive so the sandbox supervisor can track it.
+# steam.sh forks the real client and exits; we must stay alive
+# until killed externally (SIGTERM from supervisor).
+wait $STEAM_PID 2>/dev/null
+# If Steam exited, keep alive so Xvfb/x11vnc stay running
+# for the bot to use. Sleep until killed.
+while true; do sleep 60; done
 "#,
             display = display,
             snap_home = sandbox_home.display(),
@@ -515,6 +532,15 @@ exec "$STEAM_LOCAL/steam.sh" {args}
     }
 
     pub async fn shutdown(&mut self) {
+        // Hard-stop everything on this X display first (Steam/CS2 often survive killing only the snap shell).
+        let display = self.cfg.display;
+        let _ = tokio::task::spawn_blocking(move || {
+            proc_kill::signal_clients_on_display(display, Signal::SIGTERM);
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            proc_kill::signal_clients_on_display(display, Signal::SIGKILL);
+        })
+        .await;
+
         for child_opt in [&mut self.game, &mut self.vnc, &mut self.xvfb] {
             if let Some(ref mut child) = child_opt {
                 let _ = child.kill().await;

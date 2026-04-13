@@ -1,0 +1,39 @@
+{
+  "map": "de_anubis",
+  "aliases": ["anubis"],
+  "nodes": [
+    { "x": -1080, "z": 780, "label": "t_spawn", "zone": "T_side" },
+    { "x": -720, "z": 480, "label": "t_street", "zone": "T_side" },
+    { "x": -380, "z": 220, "label": "canal", "zone": "mid" },
+    { "x": -40, "z": -20, "label": "mid_bridge", "zone": "mid" },
+    { "x": 320, "z": 180, "label": "connector", "zone": "mid" },
+    { "x": -620, "z": -180, "label": "a_main", "zone": "A" },
+    { "x": -980, "z": -420, "label": "a_site", "zone": "A" },
+    { "x": -420, "z": -520, "label": "ct_a", "zone": "CT_side" },
+    { "x": 180, "z": -360, "label": "b_main", "zone": "B" },
+    { "x": 520, "z": -620, "label": "b_site", "zone": "B" },
+    { "x": 120, "z": -780, "label": "ct_b", "zone": "CT_side" },
+    { "x": -200, "z": 520, "label": "palace_yard", "zone": "T_side" },
+    { "x": 480, "z": -40, "label": "mid_ct", "zone": "CT_side" },
+    { "x": -840, "z": 120, "label": "dark", "zone": "mid" },
+    { "x": 40, "z": 520, "label": "ruins_path", "zone": "mid" },
+    { "x": -280, "z": -720, "label": "ct_spawn", "zone": "CT_side" }
+  ],
+  "edges": [
+    [0, 1], [0, 11],
+    [1, 2], [1, 14], [1, 11],
+    [2, 3], [2, 13], [2, 14],
+    [3, 4], [3, 5], [3, 8],
+    [4, 8], [4, 9], [4, 12],
+    [5, 6], [5, 13],
+    [6, 7], [6, 15],
+    [7, 15], [7, 5],
+    [8, 9], [8, 10],
+    [9, 10], [9, 11],
+    [10, 15], [10, 12],
+    [11, 14],
+    [12, 4], [12, 11],
+    [13, 5], [13, 1],
+    [14, 4], [15, 7], [15, 10]
+  ]
+}

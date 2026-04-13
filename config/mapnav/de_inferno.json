@@ -1,0 +1,38 @@
+{
+  "map": "de_inferno",
+  "aliases": ["inferno"],
+  "nodes": [
+    { "x": -1420, "z": 980, "label": "t_spawn", "zone": "T_side" },
+    { "x": -1050, "z": 720, "label": "t_apps", "zone": "T_side" },
+    { "x": -820, "z": 1180, "label": "banana_top", "zone": "T_side" },
+    { "x": -480, "z": 620, "label": "banana", "zone": "mid" },
+    { "x": 120, "z": 380, "label": "coffins", "zone": "mid" },
+    { "x": 580, "z": -120, "label": "b_site", "zone": "B" },
+    { "x": 180, "z": -520, "label": "ct_b", "zone": "CT_side" },
+    { "x": -220, "z": 80, "label": "mid", "zone": "mid" },
+    { "x": -620, "z": -180, "label": "arch", "zone": "mid" },
+    { "x": -1080, "z": -420, "label": "library", "zone": "A" },
+    { "x": -780, "z": -820, "label": "a_site", "zone": "A" },
+    { "x": -220, "z": -920, "label": "pit", "zone": "A" },
+    { "x": 320, "z": -480, "label": "ct_spawn", "zone": "CT_side" },
+    { "x": 280, "z": 140, "label": "ct_mid", "zone": "CT_side" },
+    { "x": -400, "z": 420, "label": "top_mid", "zone": "mid" },
+    { "x": 40, "z": -200, "label": "new_box", "zone": "mid" }
+  ],
+  "edges": [
+    [0, 1], [0, 2],
+    [1, 7], [1, 15],
+    [2, 3],
+    [3, 4], [3, 15],
+    [4, 5], [4, 15],
+    [5, 6], [5, 15],
+    [6, 13], [6, 12],
+    [7, 8], [7, 9], [7, 15],
+    [8, 9], [8, 10],
+    [9, 10], [9, 11],
+    [10, 11],
+    [11, 12], [11, 13],
+    [12, 13],
+    [13, 14], [14, 15], [7, 14]
+  ]
+}

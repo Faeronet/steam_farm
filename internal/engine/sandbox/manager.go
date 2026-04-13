@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 type ContainerStatus string
@@ -154,11 +155,24 @@ func (m *Manager) Stop(ctx context.Context, accountID int64) error {
 		return fmt.Errorf("no sandbox for account %d", accountID)
 	}
 
-	if hasInst {
-		inst.Kill()
-	}
+	// 1) SIGTERM the Rust supervisor first so it can run shutdown() (kill Steam/CS2/Xvfb).
+	// 2) Never call cancel() before that — context cancel sends SIGKILL and skips Rust cleanup (orphan game).
 	if err := m.native.Stop(uint64(accountID)); err != nil {
-		log.Printf("[Sandbox] Stop command failed for %d: %v (process may have already exited)", accountID, err)
+		log.Printf("[Sandbox] Stop signal for %d: %v", accountID, err)
+	}
+
+	if hasInst && inst.exited != nil {
+		select {
+		case <-inst.exited:
+			log.Printf("[Sandbox] Supervisor for account %d exited", accountID)
+		case <-time.After(40 * time.Second):
+			log.Printf("[Sandbox] Account %d supervisor still running after SIGTERM — forcing cancel", accountID)
+			inst.cancel()
+			select {
+			case <-inst.exited:
+			case <-time.After(5 * time.Second):
+			}
+		}
 	}
 
 	m.mu.Lock()

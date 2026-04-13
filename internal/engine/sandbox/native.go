@@ -50,6 +50,7 @@ type NativeInstance struct {
 	cmd      *exec.Cmd
 	cancel   context.CancelFunc
 	events   chan IpcEvent
+	exited   chan struct{} // closed after sfarm-sandbox launch process exits (Wait returns)
 	mu       sync.Mutex
 	lastStat *IpcEvent
 }
@@ -117,11 +118,13 @@ func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeIn
 		return nil, fmt.Errorf("start sandbox: %w", err)
 	}
 
+	exitedCh := make(chan struct{})
 	inst := &NativeInstance{
 		ID:     cfg.ID,
 		cmd:    cmd,
 		cancel: cancel,
 		events: make(chan IpcEvent, 64),
+		exited: exitedCh,
 	}
 
 	// Read IPC JSON events from stdout
@@ -166,6 +169,7 @@ func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeIn
 
 	go func() {
 		_ = cmd.Wait()
+		close(exitedCh)
 		close(inst.events)
 	}()
 

@@ -24,7 +24,7 @@ type ClientConfig struct {
 
 func LoadServerConfig() *ServerConfig {
 	return &ServerConfig{
-		DatabaseURL:    getEnv("DATABASE_URL", "postgres://sfarm:sfarm_dev_pass@localhost:5432/steam_farm?sslmode=disable"),
+		DatabaseURL:    getEnv("DATABASE_URL", "postgres://sfarm:sfarm_dev_pass@127.0.0.1:5434/steam_farm?sslmode=disable"),
 		HTTPPort:       getEnvInt("HTTP_PORT", 8080),
 		GRPCPort:       getEnvInt("GRPC_PORT", 9090),
 		TelegramToken:  getEnv("TELEGRAM_TOKEN", ""),

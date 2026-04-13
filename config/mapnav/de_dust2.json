@@ -1,0 +1,43 @@
+{
+  "map": "de_dust2",
+  "aliases": ["dust2"],
+  "densify_min_edge": 52,
+  "densify_max_parts": 44,
+  "densify_max_nodes": 16000,
+  "arrive_radius": 158,
+  "nodes": [
+    { "x": -1750, "z": 1650, "label": "t_outer", "zone": "T_side" },
+    { "x": -1250, "z": 1450, "label": "t_ramp", "zone": "T_side" },
+    { "x": -750, "z": 1850, "label": "long_entry", "zone": "long" },
+    { "x": 150, "z": 2350, "label": "long", "zone": "long" },
+    { "x": 650, "z": 1950, "label": "long_pit", "zone": "long" },
+    { "x": 350, "z": 1100, "label": "ct_a", "zone": "CT_side" },
+    { "x": -150, "z": 450, "label": "catwalk", "zone": "mid" },
+    { "x": -700, "z": 50, "label": "mid", "zone": "mid" },
+    { "x": -1150, "z": 150, "label": "low_tunnel", "zone": "mid" },
+    { "x": -1650, "z": 950, "label": "upper_tunnel", "zone": "B" },
+    { "x": -1900, "z": 1350, "label": "b_halls", "zone": "B" },
+    { "x": -250, "z": -250, "label": "ct_chin", "zone": "CT_side" },
+    { "x": 250, "z": -1100, "label": "ct_spawn", "zone": "CT_side" },
+    { "x": -650, "z": -950, "label": "ct_b", "zone": "CT_side" },
+    { "x": -1100, "z": 700, "label": "short_b", "zone": "B" },
+    { "x": -1000, "z": 1650, "label": "t_mid_long", "zone": "T_side" },
+    { "x": -400, "z": 1100, "label": "ct_cat_bridge", "zone": "mid" },
+    { "x": -420, "z": 280, "label": "cat_mid_split", "zone": "mid" },
+    { "x": -200, "z": -80, "label": "ct_mid_gap", "zone": "CT_side" },
+    { "x": -900, "z": 650, "label": "b_tunnel_mid", "zone": "B" },
+    { "x": -80, "z": 1750, "label": "long_midline", "zone": "long" },
+    { "x": -1480, "z": 1150, "label": "b_upper_lane", "zone": "B" },
+    { "x": -580, "z": 1180, "label": "long_ct_forks", "zone": "long" },
+    { "x": -950, "z": 380, "label": "lower_mid", "zone": "mid" },
+    { "x": 50, "z": 700, "label": "a_long_ct", "zone": "CT_side" }
+  ],
+  "edges": [
+    [0, 1], [1, 2], [1, 14], [2, 3], [3, 4], [3, 5], [4, 5], [5, 6], [5, 7], [5, 8],
+    [6, 7], [6, 8], [6, 9], [7, 8], [7, 11], [8, 9], [8, 10], [8, 14], [9, 10], [9, 11],
+    [9, 14], [10, 14], [7, 12], [7, 13], [11, 12], [11, 13], [12, 13], [1, 9], [1, 10],
+    [1, 15], [15, 2], [5, 16], [16, 6], [6, 17], [17, 7], [7, 18], [11, 18], [18, 12],
+    [8, 19], [14, 19], [19, 9], [2, 20], [20, 3], [9, 21], [21, 10], [3, 22], [22, 5],
+    [8, 23], [23, 14], [5, 24], [24, 6], [20, 22]
+  ]
+}

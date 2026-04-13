@@ -16,7 +16,7 @@ pub enum IpcEvent {
     Exited { code: i32 },
     #[serde(rename = "error")]
     Error { message: String },
-}
+} 
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct LaunchConfig {

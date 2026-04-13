@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -20,31 +21,60 @@ import (
 )
 
 type FarmController struct {
-	db         *database.DB
-	bots       *engine.Manager
-	sandboxes  *sandbox.Manager
-	autoplay   *autoplay.Manager
-	wsHub      *ws.Hub
-	cfg        *common.ServerConfig
-	logCapture *LogCapture
-	appCtx     context.Context
+	db           *database.DB
+	bots         *engine.Manager
+	sandboxes    *sandbox.Manager
+	autoplay     *autoplay.Manager
+	wsHub        *ws.Hub
+	cfg          *common.ServerConfig
+	logCapture   *LogCapture
+	yoloLogs     *YoloLogSink
+	sigScanLogs  *SigScanLogSink
+	appCtx       context.Context
 }
 
-func NewFarmController(appCtx context.Context, db *database.DB, bots *engine.Manager, sb *sandbox.Manager, hub *ws.Hub, cfg *common.ServerConfig, lc *LogCapture) *FarmController {
+func NewFarmController(appCtx context.Context, db *database.DB, bots *engine.Manager, sb *sandbox.Manager, hub *ws.Hub, cfg *common.ServerConfig, lc *LogCapture, sigScan *SigScanLogSink) *FarmController {
+	yoloSink := NewYoloLogSink(hub, os.Stderr, 400)
+	yoloInferTrace := func(d, w, h, n int, inferErr error) {
+		if yoloSink == nil {
+			return
+		}
+		var msg string
+		switch {
+		case n < 0:
+			msg = fmt.Sprintf("[бот :%d] нет живого кадра X11 с окна CS2 (не скриншот файл)", d)
+			if inferErr != nil {
+				msg += " — " + inferErr.Error()
+			}
+		case inferErr != nil:
+			msg = fmt.Sprintf("[бот→yolo :%d] live ROI %dx%d отправлен; ошибка: %v", d, w, h, inferErr)
+		default:
+			msg = fmt.Sprintf("[бот→yolo :%d] живой X11 ROI %dx%d → нейросеть вернула %d объект(ов)", d, w, h, n)
+		}
+		_, _ = yoloSink.Write([]byte(msg + "\n"))
+	}
+	memTelemetry := func(display int, ev map[string]interface{}) {
+		if hub == nil {
+			return
+		}
+		hub.Broadcast(ws.EventCS2Mem, ev)
+	}
 	var ap *autoplay.Manager
 	if sb != nil {
-		ap = autoplay.NewManager(appCtx)
+		ap = autoplay.NewManager(appCtx, yoloSink, yoloInferTrace, memTelemetry)
 	}
 
 	fc := &FarmController{
-		db:         db,
-		bots:       bots,
-		sandboxes:  sb,
-		autoplay:   ap,
-		wsHub:      hub,
-		cfg:        cfg,
-		logCapture: lc,
-		appCtx:     appCtx,
+		db:          db,
+		bots:        bots,
+		sandboxes:   sb,
+		autoplay:    ap,
+		wsHub:       hub,
+		cfg:         cfg,
+		logCapture:  lc,
+		yoloLogs:    yoloSink,
+		sigScanLogs: sigScan,
+		appCtx:      appCtx,
 	}
 
 	bots.SetStatusHandler(func(accountID int64, status models.AccountStatus, detail string) {
@@ -79,6 +109,8 @@ func (fc *FarmController) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/drops/pending", fc.pendingDrops)
 	mux.HandleFunc("/api/farm/sessions", fc.sessions)
 	mux.HandleFunc("/api/logs", fc.logs)
+	mux.HandleFunc("/api/yolo-logs", fc.yoloLogsHandler)
+	mux.HandleFunc("/api/sigscan-logs", fc.sigScanLogsHandler)
 	mux.HandleFunc("/api/autoplay/status", fc.autoplayStatus)
 	mux.HandleFunc("/api/autoplay/start", fc.autoplayStart)
 	mux.HandleFunc("/api/autoplay/stop", fc.autoplayStop)
@@ -619,6 +651,40 @@ func (fc *FarmController) logs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	entries := fc.logCapture.Recent(n)
+	if entries == nil {
+		entries = []LogEntry{}
+	}
+	writeJSON(w, 200, entries)
+}
+
+func (fc *FarmController) yoloLogsHandler(w http.ResponseWriter, r *http.Request) {
+	n := 100
+	if q := r.URL.Query().Get("n"); q != "" {
+		if v, err := strconv.Atoi(q); err == nil && v > 0 {
+			n = v
+		}
+	}
+	var entries []LogEntry
+	if fc.yoloLogs != nil {
+		entries = fc.yoloLogs.Recent(n)
+	}
+	if entries == nil {
+		entries = []LogEntry{}
+	}
+	writeJSON(w, 200, entries)
+}
+
+func (fc *FarmController) sigScanLogsHandler(w http.ResponseWriter, r *http.Request) {
+	n := 200
+	if q := r.URL.Query().Get("n"); q != "" {
+		if v, err := strconv.Atoi(q); err == nil && v > 0 {
+			n = v
+		}
+	}
+	var entries []LogEntry
+	if fc.sigScanLogs != nil {
+		entries = fc.sigScanLogs.Recent(n)
+	}
 	if entries == nil {
 		entries = []LogEntry{}
 	}

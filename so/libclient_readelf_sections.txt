@@ -1,0 +1,54 @@
+There are 44 section headers, starting at offset 0x43c2720:
+
+Заголовки разделов:
+  [Нм] Имя               Тип             Адрес            Смещ   Разм   ES Флг Лк Инф Al
+  [ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+  [ 1] .note.gnu.build-id NOTE            00000000000002a8 0002a8 000024 00   A  0   0  4
+  [ 2] .gnu.hash         GNU_HASH        00000000000002d0 0002d0 00c0f4 00   A  3   0  8
+  [ 3] .dynsym           DYNSYM          000000000000c3c8 00c3c8 031590 18   A  4   1  8
+  [ 4] .dynstr           STRTAB          000000000003d958 03d958 05f94f 00   A  0   0  1
+  [ 5] .gnu.version      VERSYM          000000000009d2a8 09d2a8 0041cc 02   A  3   0  2
+  [ 6] .gnu.version_r    VERNEED         00000000000a1474 0a1474 000150 00   A  4   4  4
+  [ 7] .rela.dyn         RELA            00000000000a15c8 0a15c8 69c660 18   A  3   0  8
+  [ 8] .rela.plt         RELA            000000000073dc28 73dc28 015ee8 18  AI  3  32  8
+  [ 9] .eh_frame         PROGBITS        0000000000753b10 753b10 138618 00   A  0   0  8
+  [10] .eh_frame_hdr     PROGBITS        000000000088c128 88c128 0311ec 00   A  0   0  4
+  [11] .gcc_except_table PROGBITS        00000000008bd314 8bd314 03db6e 00   A  0   0  4
+  [12] .rodata           PROGBITS        00000000008fb000 8fb000 18c060 00   A  0   0 4096
+  [13] .rodata.cst16     PROGBITS        0000000000a87060 a87060 004190 10  AM  0   0 16
+  [14] .rodata.cst2      PROGBITS        0000000000a8b1f0 a8b1f0 00003c 02  AM  0   0  2
+  [15] .rodata.cst32     PROGBITS        0000000000a8b240 a8b240 0009a0 20  AM  0   0 32
+  [16] .rodata.cst4      PROGBITS        0000000000a8bbe0 a8bbe0 000cac 04  AM  0   0  4
+  [17] .rodata.cst8      PROGBITS        0000000000a8c890 a8c890 0026a0 08  AM  0   0  8
+  [18] .rodata.str1.1    PROGBITS        0000000000a8ef30 a8ef30 092fc3 01 AMS  0   0  1
+  [19] .rodata.str1.8    PROGBITS        0000000000b21ef8 b21ef8 08fb30 01 AMS  0   0  8
+  [20] .rodata.str4.4    PROGBITS        0000000000bb1a28 bb1a28 000004 04 AMS  0   0  4
+  [21] protodesc_cold    PROGBITS        0000000000bb1a40 bb1a40 03905c 00   A  0   0 32
+  [22] .fini             PROGBITS        0000000000beba9c beaa9c 000009 00  AX  0   0  4
+  [23] .init             PROGBITS        0000000000bebaa8 beaaa8 00001c 00  AX  0   0  4
+  [24] .plt              PROGBITS        0000000000bebad0 beaad0 00ea10 00  AX  0   0 16
+  [25] .plt.got          PROGBITS        0000000000bfa4e0 bf94e0 0007d8 00  AX  0   0 16
+  [26] .text             PROGBITS        0000000000bfad00 bf9d00 34b51df 00  AX  0   0 256
+  [27] .tdata            PROGBITS        00000000040b0ee0 40aeee0 000030 00 WAT  0   0 16
+  [28] .tbss             NOBITS          00000000040b0f10 40aef10 000078 00 WAT  0   0  8
+  [29] .data.rel.ro      PROGBITS        00000000040b0f20 40aef20 229498 00  WA  0   0 32
+  [30] .dynamic          DYNAMIC         00000000042da3b8 42d83b8 000270 10  WA  4   0  8
+  [31] .fini_array       FINI_ARRAY      00000000042da628 42d8628 000010 08  WA  0   0  8
+  [32] .got.plt          PROGBITS        00000000042da638 42d8638 007510 00  WA  0   0  8
+  [33] .init_array       INIT_ARRAY      00000000042e1b48 42dfb48 001808 08  WA  0   0  8
+  [34] .got              PROGBITS        00000000042e3350 42e1350 008310 00  WA  0   0  8
+  [35] .relro_padding    NOBITS          00000000042eb660 42e9660 0009a0 00  WA  0   0  1
+  [36] .data             PROGBITS        00000000042ec660 42e9660 0d8c58 00  WA  0   0 32
+  [37] .tm_clone_table   PROGBITS        00000000043c52b8 43c22b8 000000 00  WA  0   0  8
+  [38] .bss              NOBITS          00000000043c5300 43c22b8 4586e8 00  WA  0   0 128
+  [39] .common           NOBITS          000000000481d9e8 43c22b8 000020 00  WA  0   0  8
+  [40] .note.stapsdt     NOTE            0000000000000000 43c22b8 0000f0 00      0   0  4
+  [41] .comment          PROGBITS        0000000000000000 43c23a8 00018b 01  MS  0   0  1
+  [42] .gnu_debuglink    PROGBITS        0000000000000000 43c3220 000018 00      0   0  4
+  [43] .shstrtab         STRTAB          0000000000000000 43c254c 0001d0 00      0   0  1
+Обозначения флагов:
+  W (запись), A (назнач), X (исполняемый), M (слияние), S (строки),
+  I (инфо), L (порядок ссылок), O (требуется дополнительная работа ОС),
+  G (группа), T (TLS), C (сжат), x (неизвестно), o (специфич. для ОС),
+  E (исключён),
+  D (mbind), l (большой), p (processor specific)

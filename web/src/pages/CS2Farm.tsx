@@ -2,20 +2,28 @@ import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAccounts } from '@/hooks/useAccounts';
 import { useFarmLogs } from '@/hooks/useFarmLogs';
+import { useYoloLogs } from '@/hooks/useYoloLogs';
+import { useSigScanLogs } from '@/hooks/useSigScanLogs';
+import { useCS2MemLatestByDisplay } from '@/hooks/useCS2MemTelemetry';
 import { startFarm, stopFarm } from '@/api/farm';
 import StatusDot from '@/components/shared/StatusDot';
 import Badge from '@/components/shared/Badge';
 import XPProgressBar from '@/components/shared/XPProgressBar';
 import { cn } from '@/lib/utils';
 import {
-  Play, Square, Gift, Send, ShieldAlert, Terminal, Wifi, WifiOff, Trash2,
+  Play, Square, Gift, Send, ShieldAlert, Terminal, Wifi, WifiOff, Trash2, Brain, Cpu, ScanSearch,
 } from 'lucide-react';
 
 export default function CS2Farm() {
   const { data: accounts, isLoading } = useAccounts('cs2');
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const { logs, connected, addLocal, clear } = useFarmLogs();
+  const { logs: yoloLogs, connected: yoloWS, clear: clearYolo } = useYoloLogs();
+  const { logs: sigScanLogs, connected: sigScanWS, clear: clearSigScan } = useSigScanLogs();
+  const memByDisp = useCS2MemLatestByDisplay();
   const logRef = useRef<HTMLDivElement>(null);
+  const yoloLogRef = useRef<HTMLDivElement>(null);
+  const sigScanLogRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
   const startMutation = useMutation({
@@ -46,6 +54,14 @@ export default function CS2Farm() {
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' });
   }, [logs]);
+
+  useEffect(() => {
+    yoloLogRef.current?.scrollTo({ top: yoloLogRef.current.scrollHeight, behavior: 'smooth' });
+  }, [yoloLogs]);
+
+  useEffect(() => {
+    sigScanLogRef.current?.scrollTo({ top: sigScanLogRef.current.scrollHeight, behavior: 'smooth' });
+  }, [sigScanLogs]);
 
   const toggleSelect = (id: number) => {
     setSelected(prev => {
@@ -194,36 +210,145 @@ export default function CS2Farm() {
           </div>
         </div>
 
-        <div className="card !p-0 overflow-hidden flex flex-col">
-          <div className="px-4 py-2.5 border-b border-border-default flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-accent" />
-            <span className="text-sm font-semibold">Server Log</span>
-            <div className="flex-1" />
-            {connected
-              ? <Wifi className="w-3.5 h-3.5 text-status-active" />
-              : <WifiOff className="w-3.5 h-3.5 text-status-error" />}
-            <button onClick={clear} className="p-1 hover:bg-bg-tertiary rounded" title="Clear logs">
-              <Trash2 className="w-3.5 h-3.5 text-text-muted" />
-            </button>
+        <div className="flex flex-col gap-4 min-w-0">
+          <div className="card !p-0 overflow-hidden flex flex-col">
+            <div className="px-4 py-2.5 border-b border-border-default flex items-center gap-2">
+              <Terminal className="w-4 h-4 text-accent" />
+              <span className="text-sm font-semibold">Server Log</span>
+              <div className="flex-1" />
+              {connected
+                ? <Wifi className="w-3.5 h-3.5 text-status-active" />
+                : <WifiOff className="w-3.5 h-3.5 text-status-error" />}
+              <button onClick={clear} className="p-1 hover:bg-bg-tertiary rounded" title="Clear logs">
+                <Trash2 className="w-3.5 h-3.5 text-text-muted" />
+              </button>
+            </div>
+            <div ref={logRef} className="flex-1 overflow-y-auto p-3 space-y-0.5 max-h-[280px] min-h-[200px] font-mono text-xs bg-[#0a0e17]">
+              {logs.length === 0 ? (
+                <p className="text-text-muted py-4 text-center text-[11px]">
+                  Select accounts and click Start.<br/>
+                  Server logs will appear here in real-time.
+                </p>
+              ) : logs.map((log, i) => (
+                <div key={i} className={cn(
+                  'flex gap-2 py-0.5 px-1 rounded leading-relaxed',
+                  log.level === 'error' && 'text-red-400',
+                  log.level === 'success' && 'text-emerald-400',
+                  log.level === 'warning' && 'text-amber-400',
+                  log.level === 'info' && 'text-slate-400',
+                )}>
+                  <span className="text-slate-600 shrink-0">{log.time}</span>
+                  <span className="break-all">{log.message}</span>
+                </div>
+              ))}
+            </div>
           </div>
-          <div ref={logRef} className="flex-1 overflow-y-auto p-3 space-y-0.5 max-h-[500px] min-h-[300px] font-mono text-xs bg-[#0a0e17]">
-            {logs.length === 0 ? (
-              <p className="text-text-muted py-4 text-center text-[11px]">
-                Select accounts and click Start.<br/>
-                Server logs will appear here in real-time.
-              </p>
-            ) : logs.map((log, i) => (
-              <div key={i} className={cn(
-                'flex gap-2 py-0.5 px-1 rounded leading-relaxed',
-                log.level === 'error' && 'text-red-400',
-                log.level === 'success' && 'text-emerald-400',
-                log.level === 'warning' && 'text-amber-400',
-                log.level === 'info' && 'text-slate-400',
-              )}>
-                <span className="text-slate-600 shrink-0">{log.time}</span>
-                <span className="break-all">{log.message}</span>
-              </div>
-            ))}
+
+          <div className="card !p-0 overflow-hidden flex flex-col">
+            <div className="px-4 py-2.5 border-b border-border-default flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-cyan-400" />
+              <span className="text-sm font-semibold">Память / ESP</span>
+            </div>
+            <div className="overflow-y-auto p-3 space-y-2 max-h-[200px] min-h-[120px] font-mono text-[11px] bg-[#071216]">
+              {Object.keys(memByDisp).length === 0 ? (
+                <p className="text-text-muted text-center leading-relaxed">
+                  Снимки с каждого тика бота (~64/s) по WebSocket <code className="text-cyan-300/90">cs2:mem</code>:
+                  опрос памяти, ESP-боксы, длина маршрута. Если пусто — бот не запущен или нет подключения WS.
+                </p>
+              ) : (
+                [...Object.entries(memByDisp)].sort(([a], [b]) => Number(a) - Number(b)).map(([disp, m]) => (
+                  <div key={disp} className="rounded border border-border-default/60 bg-bg-secondary/40 px-2 py-1.5 space-y-0.5">
+                    <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-slate-300">
+                      <span className="text-cyan-300/90">:{disp}</span>
+                      <span>tick {m.bot_tick}</span>
+                      <span className={m.mem_poll_ran ? 'text-emerald-400' : 'text-slate-500'}>
+                        poll {m.mem_poll_ran ? 'on' : 'off'}
+                      </span>
+                      <span className={m.mem_poll_ok ? 'text-emerald-400' : 'text-amber-400'}>
+                        {m.mem_poll_ok ? 'read OK' : 'read fail'}
+                      </span>
+                      {m.mem_driver ? null : <span className="text-red-400">no driver</span>}
+                    </div>
+                    <div className="text-slate-500 break-all">
+                      ESP boxes: <span className="text-slate-300">{m.esp_box_count}</span>
+                      {' · '}nav {m.nav_route_step}/{m.nav_route_len}
+                      {' · '}phase {m.phase}
+                      {m.mem_poll_err ? (
+                        <span className="text-red-400/90"> · {m.mem_poll_err}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="card !p-0 overflow-hidden flex flex-col">
+            <div className="px-4 py-2.5 border-b border-border-default flex items-center gap-2">
+              <Brain className="w-4 h-4 text-violet-400" />
+              <span className="text-sm font-semibold">YOLO / нейросеть</span>
+              <div className="flex-1" />
+              {yoloWS
+                ? <Wifi className="w-3.5 h-3.5 text-status-active" />
+                : <WifiOff className="w-3.5 h-3.5 text-status-error" />}
+              <button onClick={clearYolo} className="p-1 hover:bg-bg-tertiary rounded" title="Clear">
+                <Trash2 className="w-3.5 h-3.5 text-text-muted" />
+              </button>
+            </div>
+            <div ref={yoloLogRef} className="flex-1 overflow-y-auto p-3 space-y-0.5 max-h-[260px] min-h-[180px] font-mono text-xs bg-[#0d0814]">
+              {yoloLogs.length === 0 ? (
+                <p className="text-text-muted py-4 text-center text-[11px]">
+                  Логи <code className="text-violet-300/90">yolo_worker</code> и обмена бота (живой X11 ROI, не файлы).
+                  <br />
+                  Превью с боксами в VNC: <code className="text-violet-300/90">SFARM_YOLO_PREVIEW=1</code> при запуске desktop.
+                </p>
+              ) : yoloLogs.map((log, i) => (
+                <div key={i} className={cn(
+                  'flex gap-2 py-0.5 px-1 rounded leading-relaxed',
+                  log.level === 'error' && 'text-red-400',
+                  log.level === 'success' && 'text-emerald-400',
+                  log.level === 'warning' && 'text-amber-400',
+                  log.level === 'info' && 'text-slate-400',
+                )}>
+                  <span className="text-slate-600 shrink-0">{log.time}</span>
+                  <span className="break-all">{log.message}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="card !p-0 overflow-hidden flex flex-col">
+            <div className="px-4 py-2.5 border-b border-border-default flex items-center gap-2">
+              <ScanSearch className="w-4 h-4 text-cyan-400" />
+              <span className="text-sm font-semibold">SigScanner (libclient.so)</span>
+              <div className="flex-1" />
+              {sigScanWS
+                ? <Wifi className="w-3.5 h-3.5 text-status-active" />
+                : <WifiOff className="w-3.5 h-3.5 text-status-error" />}
+              <button onClick={clearSigScan} className="p-1 hover:bg-bg-tertiary rounded" title="Clear">
+                <Trash2 className="w-3.5 h-3.5 text-text-muted" />
+              </button>
+            </div>
+            <div ref={sigScanLogRef} className="flex-1 overflow-y-auto p-3 space-y-0.5 max-h-[260px] min-h-[180px] font-mono text-xs bg-[#0a1018]">
+              {sigScanLogs.length === 0 ? (
+                <p className="text-text-muted py-4 text-center text-[11px]">
+                  Runtime signature scanner: ищет <code className="text-cyan-300/90">dw_*</code> в .text libclient.so при подключении к CS2.
+                  <br />
+                  Файл лога: <code className="text-cyan-300/90">/tmp/sfarm_sigscan.log</code>
+                </p>
+              ) : sigScanLogs.map((log, i) => (
+                <div key={i} className={cn(
+                  'flex gap-2 py-0.5 px-1 rounded leading-relaxed',
+                  log.level === 'error' && 'text-red-400',
+                  log.level === 'success' && 'text-emerald-400',
+                  log.level === 'warning' && 'text-amber-400',
+                  log.level === 'info' && 'text-slate-400',
+                )}>
+                  <span className="text-slate-600 shrink-0">{log.time}</span>
+                  <span className="break-all">{log.message}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>

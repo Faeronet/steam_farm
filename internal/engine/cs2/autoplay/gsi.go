@@ -27,6 +27,8 @@ type GSIState struct {
 	Player *struct {
 		SteamID  string `json:"steamid"`
 		Activity string `json:"activity"` // "playing", "menu", "textinput"
+		// World position from GSI when cfg enables player_position ("x, y, z").
+		Position string `json:"position"`
 		State    *struct {
 			Health  int `json:"health"`
 			Armor   int `json:"armor"`
@@ -43,8 +45,9 @@ type GSIState struct {
 type GSIServer struct {
 	server   *http.Server
 	mu       sync.RWMutex
-	latest   map[string]*GSIState          // steamid -> latest state
-	handlers map[string]func(*GSIState)    // steamid -> callback
+	latest   map[string]*GSIState       // steamid -> latest state
+	handlers map[string]func(*GSIState) // steamid -> callback
+	catchAll []func(*GSIState)          // handlers registered with empty steamID
 }
 
 func NewGSIServer() *GSIServer {
@@ -76,14 +79,22 @@ func (gs *GSIServer) Stop() {
 
 func (gs *GSIServer) RegisterHandler(steamID string, fn func(*GSIState)) {
 	gs.mu.Lock()
-	gs.handlers[steamID] = fn
+	if steamID == "" {
+		gs.catchAll = append(gs.catchAll, fn)
+	} else {
+		gs.handlers[steamID] = fn
+	}
 	gs.mu.Unlock()
 }
 
 func (gs *GSIServer) UnregisterHandler(steamID string) {
 	gs.mu.Lock()
-	delete(gs.handlers, steamID)
-	delete(gs.latest, steamID)
+	if steamID == "" {
+		gs.catchAll = nil
+	} else {
+		delete(gs.handlers, steamID)
+		delete(gs.latest, steamID)
+	}
 	gs.mu.Unlock()
 }
 
@@ -114,18 +125,21 @@ func (gs *GSIServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	if steamID == "" && state.Player != nil {
 		steamID = state.Player.SteamID
 	}
-	if steamID == "" {
-		w.WriteHeader(200)
-		return
-	}
 
 	gs.mu.Lock()
-	gs.latest[steamID] = &state
+	if steamID != "" {
+		gs.latest[steamID] = &state
+	}
 	handler := gs.handlers[steamID]
+	catchAll := make([]func(*GSIState), len(gs.catchAll))
+	copy(catchAll, gs.catchAll)
 	gs.mu.Unlock()
 
 	if handler != nil {
 		handler(&state)
+	}
+	for _, fn := range catchAll {
+		fn(&state)
 	}
 	w.WriteHeader(200)
 }
@@ -155,6 +169,10 @@ func EnsureGSIConfig() error {
     "buffer"    "0.1"
     "throttle"  "0.5"
     "heartbeat" "30.0"
+    "output"
+    {
+        "precision_position" "1"
+    }
     "data"
     {
         "provider"            "1"
@@ -164,6 +182,7 @@ func EnsureGSIConfig() error {
         "player_state"        "1"
         "player_weapons"      "1"
         "player_match_stats"  "1"
+        "player_position"     "1"
     }
 }
 `, GSIPort)

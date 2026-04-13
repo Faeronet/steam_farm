@@ -1,0 +1,23 @@
+{
+  "doc": "Linux: dw_* для libclient.so. Таблица RVA: make rva-table → so/rva_table.json; в игре GET /rva-probe?block=.data&limit=500 (во время матча после спавна; ?force=1 вне матча). data_section_* — справочно. so/libclient_offsets.example.json. SFARM_CS2_MEM_DEBUG_HTTP, SFARM_CS2_MEM_RVA_TABLE, SFARM_CS2_MEM_MATCH_GATE.",
+  "module_substr": "libclient",
+  "module_path_contains": "",
+  "data_section_start_rva": 70174304,
+  "data_section_plus_20h_rva": 70174336,
+  "dw_local_player_pawn": 0,
+  "dw_entity_list": 0,
+  "dw_local_player_controller": 0,
+  "m_h_player_pawn": 0,
+  "m_v_old_origin": 0,
+  "m_ang_eye_angles": 0,
+  "m_vec_abs_velocity": 0,
+  "dw_view_matrix": 0,
+  "dw_game_entity_system": 0,
+  "dw_game_entity_system_highest_index": 0,
+  "m_i_team_num": 0,
+  "m_i_health": 0,
+  "m_life_state": 0,
+  "entity_list_stride": 0,
+  "esp_player_height": 0,
+  "esp_eye_z_offset": 0
+}

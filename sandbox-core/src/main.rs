@@ -1,5 +1,6 @@
 mod ipc;
 mod monitor;
+mod proc_kill;
 mod process;
 mod sandbox;
 mod steam;

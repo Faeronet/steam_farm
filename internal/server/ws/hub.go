@@ -15,6 +15,9 @@ const (
 	EventSandboxChange EventType = "sandbox:status"
 	EventError         EventType = "farm:error"
 	EventLog           EventType = "log"
+	EventYoloLog       EventType = "yolo:log"
+	EventCS2Mem        EventType = "cs2:mem"
+	EventSigScanLog    EventType = "sigscan:log"
 )
 
 type WSMessage struct {

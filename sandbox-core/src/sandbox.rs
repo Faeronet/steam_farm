@@ -142,20 +142,39 @@ pub async fn run(cfg: LaunchConfig) -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn stop(id: u64) {
     let pid_file = sandbox_dir(id).join("pid");
-    match fs::read_to_string(&pid_file) {
-        Ok(pid_str) => {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                match nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(pid),
-                    nix::sys::signal::Signal::SIGTERM,
-                ) {
-                    Ok(_) => eprintln!("Sent SIGTERM to sandbox {} (pid {})", id, pid),
-                    Err(e) => eprintln!("Failed to signal sandbox {} (pid {}): {}", id, pid, e),
-                }
+    let pid: i32 = match fs::read_to_string(&pid_file) {
+        Ok(pid_str) => match pid_str.trim().parse::<i32>() {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("Bad PID file for sandbox {}", id);
+                return;
             }
+        },
+        Err(_) => {
+            eprintln!("No PID file found for sandbox {}", id);
+            return;
         }
-        Err(_) => eprintln!("No PID file found for sandbox {}", id),
+    };
+
+    match nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGTERM,
+    ) {
+        Ok(_) => eprintln!("Sent SIGTERM to sandbox {} (pid {})", id, pid),
+        Err(e) => eprintln!("Failed to signal sandbox {} (pid {}): {}", id, pid, e),
     }
+
+    // If the supervisor never reaches shutdown() (stuck I/O), force-kill after a grace period.
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok() {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+            eprintln!("SIGKILL sandbox supervisor {} (pid {}) — still alive after SIGTERM", id, pid);
+        }
+    });
 }
 
 pub fn status() {

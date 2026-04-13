@@ -1,0 +1,51 @@
+# --- Go ---
+# Весь каталог сборки/стартовых бинарников (sfarm-*, Xvfb и т.д. — пересобрать/положить локально).
+/bin/
+*.exe
+*.test
+*.out
+coverage.out
+vendor/
+
+# Случайно собранные бинарники в корне (ожидается ./bin/…)
+/sfarm-desktop
+/sfarm-server
+
+# --- Rust (sandbox-core) ---
+/sandbox-core/target/
+**/*.rs.bk
+
+# --- Node / frontend ---
+/web/node_modules/
+/web/dist/
+/web/.vite/
+cmd/desktop/dist/
+
+# --- Python ---
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/.Python
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/*.egg-info/
+**/.eggs/
+tools/cs2-yolo/.venv/
+
+# --- IDE / OS ---
+.cursor/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Logs / local env ---
+*.log
+.env
+.env.local
+.env.*.local
+server 
+sfarm-desktop

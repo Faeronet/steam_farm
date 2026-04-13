@@ -20,13 +20,23 @@ export default defineConfig({
     },
   },
   server: {
+    // true = 0.0.0.0 — панель доступна по IP машины (LAN / внешняя сеть), не только localhost
+    host: true,
     port: 3001,
+    strictPort: true,
+    // иначе Vite может отклонять запросы по IP/домену
+    allowedHosts: true,
     proxy: {
-      '/api': 'http://localhost:8085',
+      '/api': 'http://127.0.0.1:8085',
       '/ws': {
-        target: 'ws://localhost:8085',
+        target: 'ws://127.0.0.1:8085',
         ws: true,
       },
     },
+  },
+  preview: {
+    host: true,
+    port: 4173,
+    strictPort: true,
   },
 });

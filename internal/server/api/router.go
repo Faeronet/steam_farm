@@ -77,9 +77,17 @@ func (r *Router) setupRoutes() {
 
 		sandbox := api.Group("/sandbox")
 		{
+			// Контракт как у cmd/desktop (SandboxMonitor.tsx).
+			sandbox.GET("/list", r.listSandboxes)
+			sandbox.POST("/stop", r.sandboxStopDesktopCompat)
+
 			sandbox.GET("", r.listSandboxes)
 			sandbox.GET("/:id/status", r.sandboxStatus)
 		}
+
+		api.GET("/autoplay/status", r.autoplayStatusStub)
+		api.POST("/autoplay/start", r.autoplayStartStub)
+		api.POST("/autoplay/stop", r.autoplayStopStub)
 	}
 }
 

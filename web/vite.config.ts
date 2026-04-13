@@ -24,6 +24,8 @@ export default defineConfig({
     host: true,
     port: 3001,
     strictPort: true,
+    // при доступе по Tailscale/LAN задайте: VITE_DEV_ORIGIN=http://100.x.x.x:3001
+    origin: process.env.VITE_DEV_ORIGIN || undefined,
     // иначе Vite может отклонять запросы по IP/домену
     allowedHosts: true,
     proxy: {

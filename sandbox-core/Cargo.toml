@@ -8,7 +8,8 @@ name = "sfarm-sandbox"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+# 4.5+ тянет clap_lex с edition2024 — нужен Rust ≥1.85; 4.4.x собирается на Rust 1.75+
+clap = { version = "4.4.18", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

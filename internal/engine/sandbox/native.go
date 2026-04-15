@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 )
 
 type ContainerStats struct {
@@ -44,6 +45,8 @@ type IpcEvent struct {
 	Code     int     `json:"code,omitempty"`
 	Message  string  `json:"message,omitempty"`
 }
+
+const waitSandboxStarted = 3 * time.Minute
 
 type NativeInstance struct {
 	ID       uint64
@@ -172,6 +175,38 @@ func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeIn
 		close(exitedCh)
 		close(inst.events)
 	}()
+
+	// Не возвращаемся, пока Xvfb+x11vnc не готовы (IPC started) — иначе автоплей/X11Input
+	// стартует раньше сокета :N и минутами крутит «Display not ready».
+	select {
+	case ev, ok := <-inst.events:
+		if !ok {
+			cancel()
+			return nil, fmt.Errorf("sandbox process exited before X11 was ready")
+		}
+		switch ev.Event {
+		case "started":
+			// ok
+		case "error":
+			cancel()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			return nil, fmt.Errorf("sandbox: %s", ev.Message)
+		default:
+			cancel()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			return nil, fmt.Errorf("sandbox: expected started, got %q", ev.Event)
+		}
+	case <-time.After(waitSandboxStarted):
+		cancel()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		return nil, fmt.Errorf("timeout waiting for sandbox started (X11/VNC); check sfarm-sandbox logs and Xvfb")
+	}
 
 	return inst, nil
 }

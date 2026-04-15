@@ -5,9 +5,9 @@
 # Строка БД по умолчанию (docker-compose: postgres на хосте :5434). Переопределение: make start DATABASE_URL=...
 DATABASE_URL ?= postgres://sfarm:sfarm_dev_pass@127.0.0.1:5434/steam_farm?sslmode=disable
 
-# Панель desktop по умолчанию только на 127.0.0.1. Для всех интерфейсов: SFARM_HTTP_LISTEN=0.0.0.0:8080
+# Панель desktop: по умолчанию 0.0.0.0:8080 (доступ из сети — откройте порт в firewall). Только localhost: SFARM_HTTP_LISTEN=127.0.0.1:0
 # Исключить интерфейсы из списка URL в логе: по умолчанию tailscale0; SFARM_HTTP_IFACE_SKIP=- — не исключать; docker0,tailscale0 — свой список
-SFARM_HTTP_LISTEN ?=
+SFARM_HTTP_LISTEN ?= 0.0.0.0:8080
 SFARM_HTTP_IFACE_SKIP ?=
 
 # Актуальные offsets.json + client_dll.json из a2x/cs2-dumper (обновлять после патча CS2).
@@ -90,7 +90,7 @@ dev: db-up
 # Один сценарий «всё собрать и запустить»: Postgres → ожидание → сборка → sfarm-desktop (встроенный UI + API + sandbox).
 # Требуется: Docker, Go, Rust/cargo, Node/npm; для сборки desktop — dev-пакеты X11 (libx11-dev libxtst-dev libxext-dev).
 # Первый запуск без кэша: make start-fresh  или  make start FRESH=1
-# Доступ из сети: make start SFARM_HTTP_LISTEN=0.0.0.0:8080  (порт открыть в firewall)
+# Порт 8080 по умолчанию слушает все интерфейсы — при необходимости закройте в firewall всё кроме VPN
 start: wait-postgres
 	@$(MAKE) $(if $(FRESH),rebuild-fresh,build)
 	@$(MAKE) run-desktop
@@ -157,4 +157,4 @@ help:
 	@echo "  make rebuild-fresh  — чистая пересборка Go/Rust/npm по правилам проекта"
 	@echo "  make dev            — Postgres + go run ./cmd/server (API без встроенного UI)"
 	@echo "  make db-up / db-down — только контейнер PostgreSQL"
-	@echo "Переменные: DATABASE_URL=...  FRESH=1  SFARM_HTTP_LISTEN=0.0.0.0:8080  SFARM_HTTP_IFACE_SKIP (см. Makefile)"
+	@echo "Переменные: DATABASE_URL=...  FRESH=1  SFARM_HTTP_LISTEN (по умолч. 0.0.0.0:8080)  SFARM_HTTP_IFACE_SKIP"

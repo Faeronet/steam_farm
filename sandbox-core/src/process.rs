@@ -86,10 +86,29 @@ impl ProcessSupervisor {
         let _ = std::fs::remove_file(&lock_file);
         let _ = std::fs::remove_file(&socket_file);
 
-        // Без TCP sfarm-desktop не сможет подключиться по 127.0.0.1:N.0, если /tmp у процессов разный (PrivateTmp, snap).
-        // Доступ снаружи всё равно режьте firewall; локально слушает порт 6000+display.
+        // Минимальные образы / пустой /tmp: каталог для unix-сокета X11.
+        let x11_unix = std::path::Path::new("/tmp/.X11-unix");
+        if !x11_unix.exists() {
+            std::fs::create_dir_all(x11_unix)
+                .map_err(|e| format!("create /tmp/.X11-unix: {}", e))?;
+        }
+
+        // -listen tcp: без TCP sfarm-desktop не подключится по 127.0.0.1:N.0, если unix-сокет недоступен
+        // (PrivateTmp, snap, разные mount namespace). Локально слушает порт 6000+display.
+        // -noreset: стабильнее при переподключениях клиентов.
         let mut child = Command::new(&xvfb_bin)
-            .args([&display, "-screen", "0", "1280x720x24", "-ac", "+extension", "GLX"])
+            .args([
+                &display,
+                "-screen",
+                "0",
+                "1280x720x24",
+                "-ac",
+                "+extension",
+                "GLX",
+                "-listen",
+                "tcp",
+                "-noreset",
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -106,19 +125,33 @@ impl ProcessSupervisor {
             });
         }
 
-        self.xvfb = Some(child);
-
-        // Wait for X11 socket to appear
+        // Ждём unix-сокет; если Xvfb сразу падает (нет lib, неверный бинарь) — ошибка, а не «тихий» успех.
         let socket_path = format!("/tmp/.X11-unix/X{}", self.cfg.display);
-        for _ in 0..20 {
+        for _ in 0..50 {
+            if let Ok(Some(status)) = child.try_wait() {
+                return Err(
+                    format!(
+                        "Xvfb exited before display :{} was ready (status={}); check [xvfb-{}] stderr above",
+                        self.cfg.display, status, self.cfg.id
+                    )
+                    .into(),
+                );
+            }
             if std::path::Path::new(&socket_path).exists() {
-                eprintln!("[sandbox-{}] Xvfb display :{} ready", self.cfg.id, self.cfg.display);
+                eprintln!("[sandbox-{}] Xvfb display :{} ready (unix socket)", self.cfg.id, self.cfg.display);
+                self.xvfb = Some(child);
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        eprintln!("[sandbox-{}] WARNING: X11 socket {} not found after 2s", self.cfg.id, socket_path);
-        Ok(())
+        let _ = child.kill().await;
+        Err(
+            format!(
+                "X11 unix socket {} did not appear within 5s — Xvfb likely failed (binary: {})",
+                socket_path, xvfb_bin
+            )
+            .into(),
+        )
     }
 
     pub async fn start_vnc(&mut self) -> Result<(), Box<dyn std::error::Error>> {

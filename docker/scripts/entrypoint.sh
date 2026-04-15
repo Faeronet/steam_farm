@@ -26,7 +26,8 @@ ln -sf /home/steam/.steam/sdk64 /home/steam/.steam/sdk64 2>/dev/null || true
 
 # Start virtual display
 echo "[1/5] Starting Xvfb on ${DISPLAY:-:99}..."
-Xvfb ${DISPLAY:-:99} -screen 0 1024x768x24 -ac +extension GLX +render -noreset &
+# -listen tcp: хост/другие namespace могут подключаться по 127.0.0.1:(6000+N).0
+Xvfb ${DISPLAY:-:99} -screen 0 1024x768x24 -ac +extension GLX +render -noreset -listen tcp &
 XVFB_PID=$!
 sleep 2
 

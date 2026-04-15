@@ -241,13 +241,12 @@ func main() {
 	server.Shutdown(ctx)
 }
 
-// desktopHTTPListenAddr: по умолчанию только localhost и свободный порт.
-// Внешний доступ: SFARM_HTTP_LISTEN=:8080 или 0.0.0.0:8080 (или IP машины).
+// desktopHTTPListenAddr: по умолчанию все интерфейсы :8080 (LAN/VPN). Только локально: SFARM_HTTP_LISTEN=127.0.0.1:0
 func desktopHTTPListenAddr() string {
 	if v := strings.TrimSpace(os.Getenv("SFARM_HTTP_LISTEN")); v != "" {
 		return v
 	}
-	return "127.0.0.1:0"
+	return "0.0.0.0:8080"
 }
 
 // desktopOpenBrowserURL — URL для xdg-open: при bind на 0.0.0.0/127.0.0.1 — localhost, иначе тот же IP.

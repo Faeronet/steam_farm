@@ -123,6 +123,8 @@ db-up:
 		docker compose logs postgres --tail 100 2>&1 || true; \
 		echo "=== pg_isready inside container (stderr) ==="; \
 		docker compose exec -T postgres pg_isready -U sfarm -v 2>&1 || true; \
+		echo ""; \
+		echo "Подсказка: 'No space left on device' в логах postgres — диск/раздел Docker переполнен (не связано с X11/sandbox). См.: df -h, docker system df, docker system prune -a"; \
 		exit 1; \
 	fi
 

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -211,9 +212,8 @@ func main() {
 	fmt.Println("║       ⚡ STEAM FARM SYSTEM — Desktop Client       ║")
 	fmt.Println("╠═══════════════════════════════════════════════════╣")
 	fmt.Printf("║  UI (local): %-34s ║\n", appURL)
-	if host, ok := externalHTTPHint(tcpAddr); ok {
-		lanURL := fmt.Sprintf("http://%s:%d", host, port)
-		fmt.Printf("║  UI (LAN/VPN): %-34s ║\n", lanURL)
+	for _, line := range formatNetworkURLLines(port, tcpAddr) {
+		fmt.Printf("║  %-47s ║\n", truncateRunes(line, 47))
 	}
 	if sandboxMgr != nil {
 		fmt.Printf("║  Sandbox:   Native OK, max %d instances              ║\n", clientCfg.MaxSandboxes)
@@ -259,17 +259,89 @@ func desktopOpenBrowserURL(addr *net.TCPAddr) string {
 	return fmt.Sprintf("http://%s:%d", addr.IP.String(), port)
 }
 
-// externalHTTPHint возвращает первый не-loopback IPv4 для подсказки в логе (Tailscale/LAN).
-func externalHTTPHint(addr *net.TCPAddr) (string, bool) {
-	if addr.IP != nil && !addr.IP.IsUnspecified() && !addr.IP.IsLoopback() {
-		return addr.IP.String(), true
+// ifaceSkipSet: по умолчанию не показываем tailscale0. SFARM_HTTP_IFACE_SKIP=- — не исключать ничего;
+// иначе список имён интерфейсов через запятую (полная замена дефолта).
+func ifaceSkipSet() map[string]bool {
+	s := strings.TrimSpace(os.Getenv("SFARM_HTTP_IFACE_SKIP"))
+	if s == "-" {
+		return nil
 	}
+	if s == "" {
+		return map[string]bool{"tailscale0": true}
+	}
+	m := make(map[string]bool)
+	for _, name := range strings.Split(s, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			m[name] = true
+		}
+	}
+	return m
+}
+
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max <= 3 {
+		return string(r[:max])
+	}
+	return string(r[:max-3]) + "..."
+}
+
+// formatNetworkURLLines — все IPv4 на поднятых интерфейсах (кроме loopback и skip), по одному URL на адрес.
+func formatNetworkURLLines(port int, tcpAddr *net.TCPAddr) []string {
+	entries := listHTTPBindURLEntries(port, tcpAddr)
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(entries)+1)
+	out = append(out, "По сети:")
+	for _, e := range entries {
+		out = append(out, "  "+e.String())
+	}
+	return out
+}
+
+type httpBindEntry struct {
+	URL   string
+	Iface string
+}
+
+func (e httpBindEntry) String() string {
+	if e.Iface != "" {
+		return fmt.Sprintf("%s (%s)", e.URL, e.Iface)
+	}
+	return e.URL
+}
+
+func listHTTPBindURLEntries(port int, tcpAddr *net.TCPAddr) []httpBindEntry {
+	if tcpAddr != nil && tcpAddr.IP != nil && tcpAddr.IP.IsLoopback() {
+		return nil
+	}
+	if tcpAddr != nil && tcpAddr.IP != nil && !tcpAddr.IP.IsUnspecified() && !tcpAddr.IP.IsLoopback() {
+		return []httpBindEntry{{URL: fmt.Sprintf("http://%s:%d", tcpAddr.IP.String(), port)}}
+	}
+	return enumerateInterfaceURLEntries(port, ifaceSkipSet())
+}
+
+func enumerateInterfaceURLEntries(port int, skip map[string]bool) []httpBindEntry {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return "", false
+		return nil
 	}
+	type pair struct {
+		ip   string
+		name string
+	}
+	var pairs []pair
+	seen := map[string]bool{}
 	for _, iface := range ifaces {
 		if (iface.Flags & net.FlagUp) == 0 || (iface.Flags&net.FlagLoopback) != 0 {
+			continue
+		}
+		if skip != nil && skip[iface.Name] {
 			continue
 		}
 		addrs, err := iface.Addrs()
@@ -289,10 +361,25 @@ func externalHTTPHint(addr *net.TCPAddr) (string, bool) {
 			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
 				continue
 			}
-			return ip.String(), true
+			s := ip.String()
+			if seen[s] {
+				continue
+			}
+			seen[s] = true
+			pairs = append(pairs, pair{ip: s, name: iface.Name})
 		}
 	}
-	return "", false
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].ip < pairs[j].ip
+	})
+	out := make([]httpBindEntry, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, httpBindEntry{
+			URL:   fmt.Sprintf("http://%s:%d", p.ip, port),
+			Iface: p.name,
+		})
+	}
+	return out
 }
 
 func openBrowser(url string) {

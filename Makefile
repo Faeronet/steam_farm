@@ -1,5 +1,9 @@
 .PHONY: all build rebuild-fresh server desktop sandbox dev db-up db-down migrate test clean cs2-offsets rva-table \
-	rva-table-1 rva-table-2 rva-watch frida-rva-full libclient-globals libclient-globals-help
+	rva-table-1 rva-table-2 rva-watch frida-rva-full libclient-globals libclient-globals-help \
+	start start-fresh run-desktop wait-postgres help
+
+# Строка БД по умолчанию (docker-compose: postgres на хосте :5434). Переопределение: make start DATABASE_URL=...
+DATABASE_URL ?= postgres://sfarm:sfarm_dev_pass@127.0.0.1:5434/steam_farm?sslmode=disable
 
 # Актуальные offsets.json + client_dll.json из a2x/cs2-dumper (обновлять после патча CS2).
 cs2-offsets:
@@ -78,6 +82,29 @@ desktop: sandbox
 dev: db-up
 	go run ./cmd/server
 
+# Один сценарий «всё собрать и запустить»: Postgres → ожидание → сборка → sfarm-desktop (встроенный UI + API + sandbox).
+# Требуется: Docker, Go, Rust/cargo, Node/npm; для сборки desktop — dev-пакеты X11 (libx11-dev libxtst-dev libxext-dev).
+# Первый запуск без кэша: make start-fresh  или  make start FRESH=1
+start: wait-postgres
+	@$(MAKE) $(if $(FRESH),rebuild-fresh,build)
+	@$(MAKE) run-desktop
+
+start-fresh:
+	@$(MAKE) start FRESH=1
+
+wait-postgres: db-up
+	@echo "Waiting for PostgreSQL..."
+	@for i in $$(seq 1 90); do \
+		docker compose exec -T postgres pg_isready -U sfarm -d steam_farm >/dev/null 2>&1 && echo "PostgreSQL is ready." && exit 0; \
+		sleep 1; \
+	done; \
+	echo "PostgreSQL did not become ready in 90s (docker compose ps / logs?)"; exit 1
+
+run-desktop:
+	@test -x ./bin/sfarm-desktop || (echo "Нет bin/sfarm-desktop — сначала: make build"; exit 1)
+	@echo "Запуск sfarm-desktop (Ctrl+C — остановить). Откроется браузер с панелью."
+	@DATABASE_URL='$(DATABASE_URL)' ./bin/sfarm-desktop
+
 db-up:
 	docker compose up -d postgres
 
@@ -115,3 +142,13 @@ clean:
 # Install tools
 tools:
 	go install github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+
+help:
+	@echo "Основное:"
+	@echo "  make start          — поднять Postgres, собрать проект, запустить sfarm-desktop (одна команда до рабочей панели)"
+	@echo "  make start-fresh    — то же, но полная пересборка без кэша (как rebuild-fresh)"
+	@echo "  make build          — только sandbox + server + desktop (веб в cmd/desktop/dist)"
+	@echo "  make rebuild-fresh  — чистая пересборка Go/Rust/npm по правилам проекта"
+	@echo "  make dev            — Postgres + go run ./cmd/server (API без встроенного UI)"
+	@echo "  make db-up / db-down — только контейнер PostgreSQL"
+	@echo "Переменные: DATABASE_URL=...  FRESH=1 (для start)  см. корень Makefile"

@@ -15,14 +15,25 @@ pub struct SteamPaths {
 /// Если задан — проверяется первым (удобно при запуске sandbox от root, а Steam у обычного пользователя).
 const ENV_STEAM_ROOT: [&str; 2] = ["SFARM_STEAM_ROOT", "STEAM_ROOT"];
 
+/// Если env не задан, по умолчанию ищем Steam у пользователя farm-ВМ (совпадает с типичным SFARM_STEAM_ROOT).
+const DEFAULT_STEAM_ROOT: &str = "/home/steam-farm/.local/share/Steam";
+
 pub fn find_steam() -> Option<SteamPaths> {
     for key in ENV_STEAM_ROOT {
         if let Ok(s) = std::env::var(key) {
-            let root = PathBuf::from(s.trim());
+            let t = s.trim();
+            if t.is_empty() {
+                continue;
+            }
+            let root = PathBuf::from(t);
             if let Some(paths) = try_steam_root(&root) {
                 return Some(paths);
             }
         }
+    }
+
+    if let Some(paths) = try_steam_root(&PathBuf::from(DEFAULT_STEAM_ROOT)) {
+        return Some(paths);
     }
 
     let home = std::env::var("REAL_HOME")

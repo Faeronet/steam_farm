@@ -56,9 +56,8 @@ fn cleanup(id: u64) {
 
 pub async fn run(cfg: LaunchConfig) -> Result<(), Box<dyn std::error::Error>> {
     let steam_paths = steam::find_steam().ok_or(
-        "Steam installation not found: install Steam (deb/snap/flatpak), log in once, ensure \
-         ~/.local/share/Steam has steamapps/common and ubuntu12_32/steam; if sfarm runs as root, \
-         set SFARM_STEAM_ROOT=/home/YOURUSER/.local/share/Steam",
+        "Steam installation not found: install Steam (deb/snap/flatpak), log in once; by default we \
+         try /home/steam-farm/.local/share/Steam then paths under $HOME; override with SFARM_STEAM_ROOT",
     )?;
 
     eprintln!(

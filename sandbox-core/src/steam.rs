@@ -15,8 +15,10 @@ pub struct SteamPaths {
 /// Если задан — проверяется первым (удобно при запуске sandbox от root, а Steam у обычного пользователя).
 const ENV_STEAM_ROOT: [&str; 2] = ["SFARM_STEAM_ROOT", "STEAM_ROOT"];
 
-/// Если env не задан, по умолчанию ищем Steam у пользователя farm-ВМ (совпадает с типичным SFARM_STEAM_ROOT).
+/// Если env не задан: deb/.deb установка у типичного пользователя farm-ВМ.
 const DEFAULT_STEAM_ROOT: &str = "/home/steam-farm/.local/share/Steam";
+/// Ubuntu Software / snap — данные не в ~/.local, а здесь (важно при запуске sfarm от root).
+const DEFAULT_STEAM_SNAP_ROOT: &str = "/home/steam-farm/snap/steam/common/.local/share/Steam";
 
 pub fn find_steam() -> Option<SteamPaths> {
     for key in ENV_STEAM_ROOT {
@@ -33,6 +35,21 @@ pub fn find_steam() -> Option<SteamPaths> {
     }
 
     if let Some(paths) = try_steam_root(&PathBuf::from(DEFAULT_STEAM_ROOT)) {
+        return Some(paths);
+    }
+    if let Some(paths) = try_steam_root(&PathBuf::from(DEFAULT_STEAM_SNAP_ROOT)) {
+        return Some(paths);
+    }
+
+    for path in steam_roots_under_home_dirs() {
+        if let Some(paths) = try_steam_root(&path) {
+            return Some(paths);
+        }
+    }
+
+    if let Some(paths) = try_steam_root(&PathBuf::from(
+        "/root/snap/steam/common/.local/share/Steam",
+    )) {
         return Some(paths);
     }
 
@@ -59,6 +76,23 @@ pub fn find_steam() -> Option<SteamPaths> {
         }
     }
     None
+}
+
+/// Перебор `/home/*`: Steam из магазина (snap) или deb у любого пользователя, пока sfarm запущен от root.
+fn steam_roots_under_home_dirs() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir("/home") else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        let base = entry.path();
+        if !base.is_dir() {
+            continue;
+        }
+        out.push(base.join("snap/steam/common/.local/share/Steam"));
+        out.push(base.join(".local/share/Steam"));
+    }
+    out
 }
 
 fn try_steam_root(root: &PathBuf) -> Option<SteamPaths> {

@@ -187,11 +187,13 @@ func main() {
 		fileServer.ServeHTTP(w, r)
 	})
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listenAddr := desktopHTTPListenAddr()
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		log.Fatalf("Failed to find free port: %v", err)
+		log.Fatalf("HTTP listen %q: %v", listenAddr, err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
+	tcpAddr := listener.Addr().(*net.TCPAddr)
+	port := tcpAddr.Port
 	appURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	server := &http.Server{Handler: mux}
@@ -202,13 +204,17 @@ func main() {
 		}
 	}()
 
-	openBrowser(appURL)
+	openBrowser(desktopOpenBrowserURL(tcpAddr))
 
 	fmt.Println()
 	fmt.Println("╔═══════════════════════════════════════════════════╗")
 	fmt.Println("║       ⚡ STEAM FARM SYSTEM — Desktop Client       ║")
 	fmt.Println("╠═══════════════════════════════════════════════════╣")
-	fmt.Printf("║  UI:        %-37s ║\n", appURL)
+	fmt.Printf("║  UI (local): %-34s ║\n", appURL)
+	if host, ok := externalHTTPHint(tcpAddr); ok {
+		lanURL := fmt.Sprintf("http://%s:%d", host, port)
+		fmt.Printf("║  UI (LAN/VPN): %-34s ║\n", lanURL)
+	}
 	if sandboxMgr != nil {
 		fmt.Printf("║  Sandbox:   Native OK, max %d instances              ║\n", clientCfg.MaxSandboxes)
 	} else {
@@ -233,6 +239,60 @@ func main() {
 	log.Println("Shutting down server...")
 	cancel()
 	server.Shutdown(ctx)
+}
+
+// desktopHTTPListenAddr: по умолчанию только localhost и свободный порт.
+// Внешний доступ: SFARM_HTTP_LISTEN=:8080 или 0.0.0.0:8080 (или IP машины).
+func desktopHTTPListenAddr() string {
+	if v := strings.TrimSpace(os.Getenv("SFARM_HTTP_LISTEN")); v != "" {
+		return v
+	}
+	return "127.0.0.1:0"
+}
+
+// desktopOpenBrowserURL — URL для xdg-open: при bind на 0.0.0.0/127.0.0.1 — localhost, иначе тот же IP.
+func desktopOpenBrowserURL(addr *net.TCPAddr) string {
+	port := addr.Port
+	if addr.IP == nil || addr.IP.IsUnspecified() || addr.IP.IsLoopback() {
+		return fmt.Sprintf("http://127.0.0.1:%d", port)
+	}
+	return fmt.Sprintf("http://%s:%d", addr.IP.String(), port)
+}
+
+// externalHTTPHint возвращает первый не-loopback IPv4 для подсказки в логе (Tailscale/LAN).
+func externalHTTPHint(addr *net.TCPAddr) (string, bool) {
+	if addr.IP != nil && !addr.IP.IsUnspecified() && !addr.IP.IsLoopback() {
+		return addr.IP.String(), true
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", false
+	}
+	for _, iface := range ifaces {
+		if (iface.Flags & net.FlagUp) == 0 || (iface.Flags&net.FlagLoopback) != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			default:
+				continue
+			}
+			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
+				continue
+			}
+			return ip.String(), true
+		}
+	}
+	return "", false
 }
 
 func openBrowser(url string) {

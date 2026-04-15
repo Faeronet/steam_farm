@@ -17,8 +17,15 @@ fn self_dir() -> PathBuf {
 
 fn find_bin(name: &str) -> String {
     let local = self_dir().join(name);
-    if local.exists() {
+    if local.is_file() {
         return local.display().to_string();
+    }
+    // systemd/cron иногда дают урезанный PATH без /usr/bin — execvp не находит x11vnc/Xvfb.
+    for dir in ["/usr/bin", "/usr/local/bin", "/bin"] {
+        let p = PathBuf::from(dir).join(name);
+        if p.is_file() {
+            return p.display().to_string();
+        }
     }
     name.to_string()
 }
@@ -112,7 +119,14 @@ impl ProcessSupervisor {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("Failed to start Xvfb (tried '{}'): {}", xvfb_bin, e))?;
+            .map_err(|e| {
+                let hint = if e.raw_os_error() == Some(2) {
+                    " — установите пакет: apt install xvfb"
+                } else {
+                    ""
+                };
+                format!("Failed to start Xvfb (tried '{}'): {}{}", xvfb_bin, e, hint)
+            })?;
 
         let id = self.cfg.id;
         if let Some(stderr) = child.stderr.take() {
@@ -178,7 +192,14 @@ impl ProcessSupervisor {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("Failed to start x11vnc (tried '{}'): {}", vnc_bin, e))?;
+            .map_err(|e| {
+                let hint = if e.raw_os_error() == Some(2) {
+                    " — установите пакет: apt install x11vnc (и xvfb: apt install xvfb)"
+                } else {
+                    ""
+                };
+                format!("Failed to start x11vnc (tried '{}'): {}{}", vnc_bin, e, hint)
+            })?;
 
         let id = self.cfg.id;
         let vnc_port = self.cfg.vnc_port;
@@ -238,16 +259,25 @@ impl ProcessSupervisor {
             .collect::<Vec<_>>()
             .join(" ");
 
-        let snap_user_common = std::env::var("HOME")
-            .map(|h| format!("{}/snap/steam/common", h))
-            .unwrap_or_else(|_| String::from("/home/user/snap/steam/common"));
+        // steam_real/snap_common — из найденного Steam (find_steam), не из $HOME супервизора:
+        // иначе при root + Steam у steam-farm путь был /root/snap/... и steam.sh не находился.
+        let steam_real = self.steam_paths.root.display().to_string();
+        let snap_common = steam::snap_steam_common_dir(&self.steam_paths.root)
+            .unwrap_or_else(|| {
+                PathBuf::from(
+                    std::env::var("HOME")
+                        .map(|h| format!("{}/snap/steam/common", h))
+                        .unwrap_or_else(|_| "/tmp".into()),
+                )
+            })
+            .display()
+            .to_string();
 
         // Shell script that runs inside the snap container:
         // 1. Sets HOME to the sandbox directory (accessible via snap's shared data)
         // 2. Creates Steam symlinks
         // 3. Sets DISPLAY to the Xvfb instance
         // 4. Runs steam.sh with bootstrap-skip flags
-        let steam_real = format!("{}/.local/share/Steam", snap_user_common);
 
         let inner_script = format!(
             r#"
@@ -419,7 +449,7 @@ while true; do sleep 60; done
 "#,
             display = display,
             snap_home = sandbox_home.display(),
-            snap_common = snap_user_common,
+            snap_common = snap_common,
             steam_real = steam_real,
             args = args_str,
         );

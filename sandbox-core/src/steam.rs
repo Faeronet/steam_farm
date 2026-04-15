@@ -95,6 +95,26 @@ fn steam_roots_under_home_dirs() -> Vec<PathBuf> {
     out
 }
 
+/// Для `.../snap/steam/common/.local/share/Steam` возвращает `.../snap/steam/common`
+/// (кэш snap, каталог sandbox `sfarm-*`). Для deb/flatpak — `None`.
+pub fn snap_steam_common_dir(steam_root: &PathBuf) -> Option<PathBuf> {
+    let mut p = steam_root.as_path();
+    if p.file_name()?.to_str()? != "Steam" {
+        return None;
+    }
+    p = p.parent()?; // share
+    p = p.parent()?; // .local
+    p = p.parent()?; // common
+    let s = p.to_string_lossy();
+    if s.contains("snap/steam")
+        && p.file_name().and_then(|n| n.to_str()) == Some("common")
+    {
+        Some(p.to_path_buf())
+    } else {
+        None
+    }
+}
+
 fn try_steam_root(root: &PathBuf) -> Option<SteamPaths> {
     let root = root
         .canonicalize()

@@ -6,10 +6,14 @@ use crate::monitor;
 use crate::process::ProcessSupervisor;
 use crate::steam;
 
-pub fn sandbox_dir(id: u64) -> PathBuf {
-    // Use $HOME/snap/steam/common/sfarm-{id} if snap Steam is installed,
-    // so the sandbox dir is accessible from inside the snap container.
-    // Fall back to /tmp/sfarm-{id} otherwise.
+/// Каталог данных песочницы. Для snap-Steam берётся из того же `.../snap/steam/common`, что и
+/// найденный `steam_paths.root` — иначе при запуске sfarm от root путь уезжает в `/root/snap/...`.
+pub fn sandbox_dir(id: u64, steam_paths: &steam::SteamPaths) -> PathBuf {
+    if let Some(common) = steam::snap_steam_common_dir(&steam_paths.root) {
+        if common.is_dir() {
+            return common.join(format!("sfarm-{}", id));
+        }
+    }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let snap_path = PathBuf::from(format!("{}/snap/steam/common/sfarm-{}", home, id));
     if PathBuf::from(format!("{}/snap/steam/common", home)).is_dir() {
@@ -19,8 +23,15 @@ pub fn sandbox_dir(id: u64) -> PathBuf {
     }
 }
 
-fn setup_dirs(cfg: &LaunchConfig, _steam_paths: &steam::SteamPaths) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let base = sandbox_dir(cfg.id);
+fn resolve_sandbox_base(id: u64) -> PathBuf {
+    match steam::find_steam() {
+        Some(sp) => sandbox_dir(id, &sp),
+        None => PathBuf::from(format!("/tmp/sfarm-{}", id)),
+    }
+}
+
+fn setup_dirs(cfg: &LaunchConfig, steam_paths: &steam::SteamPaths) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let base = sandbox_dir(cfg.id, steam_paths);
     if base.exists() {
         fs::remove_dir_all(&base)?;
     }
@@ -51,7 +62,7 @@ fn setup_dirs(cfg: &LaunchConfig, _steam_paths: &steam::SteamPaths) -> Result<Pa
 }
 
 fn cleanup(id: u64) {
-    let _ = fs::remove_dir_all(sandbox_dir(id));
+    let _ = fs::remove_dir_all(resolve_sandbox_base(id));
 }
 
 pub async fn run(cfg: LaunchConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -65,7 +76,11 @@ pub async fn run(cfg: LaunchConfig) -> Result<(), Box<dyn std::error::Error>> {
         cfg.id,
         steam_paths.root.display(),
         steam_paths.steam_binary.display(),
-        if PathBuf::from(format!("{}/snap/steam/common", std::env::var("HOME").unwrap_or_default())).is_dir() { "yes" } else { "no" },
+        if steam::snap_steam_common_dir(&steam_paths.root).map(|p| p.is_dir()).unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        },
     );
 
     let base = setup_dirs(&cfg, &steam_paths)?;
@@ -144,7 +159,7 @@ pub async fn run(cfg: LaunchConfig) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn stop(id: u64) {
-    let pid_file = sandbox_dir(id).join("pid");
+    let pid_file = resolve_sandbox_base(id).join("pid");
     let pid: i32 = match fs::read_to_string(&pid_file) {
         Ok(pid_str) => match pid_str.trim().parse::<i32>() {
             Ok(p) => p,

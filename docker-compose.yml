@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -12,11 +10,13 @@ services:
       - "5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Только пользователь: БД steam_farm может ещё не существовать в первые секунды initdb.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sfarm -d steam_farm"]
+      test: ["CMD-SHELL", "pg_isready -U sfarm -d postgres || pg_isready -U sfarm"]
       interval: 5s
-      timeout: 3s
-      retries: 5
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   server:
     build:

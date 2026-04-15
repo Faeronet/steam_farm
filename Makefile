@@ -99,20 +99,37 @@ start-fresh:
 	@$(MAKE) start FRESH=1
 
 wait-postgres: db-up
-	@echo "Waiting for PostgreSQL..."
-	@for i in $$(seq 1 90); do \
-		docker compose exec -T postgres pg_isready -U sfarm -d steam_farm >/dev/null 2>&1 && echo "PostgreSQL is ready." && exit 0; \
-		sleep 1; \
-	done; \
-	echo "PostgreSQL did not become ready in 90s (docker compose ps / logs?)"; exit 1
+
+# Поднять Postgres и дождаться готовности. Без -d steam_farm: на initdb целевая БД может быть ещё не создана.
+# compose --wait: Docker Compose v2.20+; иначе — опрос pg_isready -U sfarm (сервер уже принимает соединения).
+db-up:
+	@set -e; \
+	if docker compose up -d --wait --wait-timeout 180 postgres 2>/dev/null; then \
+		echo "PostgreSQL is ready."; \
+	else \
+		echo "Waiting for PostgreSQL (compose without --wait or --wait failed; polling)..."; \
+		docker compose up -d postgres; \
+		for i in $$(seq 1 180); do \
+			if docker compose exec -T postgres pg_isready -U sfarm 2>/dev/null; then \
+				echo "PostgreSQL is ready."; \
+				exit 0; \
+			fi; \
+			sleep 1; \
+		done; \
+		echo "PostgreSQL did not become ready in 180s."; \
+		echo "=== docker compose ps -a ==="; \
+		docker compose ps -a || true; \
+		echo "=== docker compose logs postgres (last 100 lines) ==="; \
+		docker compose logs postgres --tail 100 2>&1 || true; \
+		echo "=== pg_isready inside container (stderr) ==="; \
+		docker compose exec -T postgres pg_isready -U sfarm -v 2>&1 || true; \
+		exit 1; \
+	fi
 
 run-desktop:
 	@test -x ./bin/sfarm-desktop || (echo "Нет bin/sfarm-desktop — сначала: make build"; exit 1)
 	@echo "Запуск sfarm-desktop (Ctrl+C — остановить). Откроется браузер с панелью."
 	@DATABASE_URL='$(DATABASE_URL)' SFARM_HTTP_LISTEN='$(SFARM_HTTP_LISTEN)' SFARM_HTTP_IFACE_SKIP='$(SFARM_HTTP_IFACE_SKIP)' ./bin/sfarm-desktop
-
-db-up:
-	docker compose up -d postgres
 
 db-down:
 	docker compose down

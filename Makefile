@@ -109,10 +109,22 @@ db-up:
 	else \
 		echo "Waiting for PostgreSQL (compose without --wait or --wait failed; polling)..."; \
 		docker compose up -d postgres; \
+		set +e; \
 		for i in $$(seq 1 180); do \
 			if docker compose exec -T postgres pg_isready -U sfarm 2>/dev/null; then \
 				echo "PostgreSQL is ready."; \
 				exit 0; \
+			fi; \
+			st=$$(docker inspect -f '{{.State.Status}}' sfarm-postgres 2>/dev/null || echo unknown); \
+			if [ "$$st" = "exited" ] || [ "$$st" = "dead" ]; then \
+				echo "PostgreSQL контейнер не работает (docker status=$$st) — выход без ожидания 180 с."; \
+				echo "=== docker compose ps -a ==="; \
+				docker compose ps -a || true; \
+				echo "=== docker compose logs postgres (last 80 lines) ==="; \
+				docker compose logs postgres --tail 80 2>&1 || true; \
+				echo ""; \
+				echo "Подсказка: 'No space left on device' в логах — освободите диск (df -h, docker system df, docker system prune -a). Пока места нет, Postgres не запустится."; \
+				exit 1; \
 			fi; \
 			sleep 1; \
 		done; \

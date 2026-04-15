@@ -249,6 +249,7 @@ func (o *linuxEnemyOverlay) PushYolo(roiX, roiY, rw, rh int, viz []YoloDet) {
 func (o *linuxEnemyOverlay) run() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	x11PrepareClientEnv()
 
 	name := C.CString(fmt.Sprintf(":%d", o.display))
 	defer C.free(unsafe.Pointer(name))

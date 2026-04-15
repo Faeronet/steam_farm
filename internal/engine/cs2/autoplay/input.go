@@ -458,12 +458,19 @@ import "C"
 import (
 	"fmt"
 	"log"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 )
+
+// x11PrepareClientEnv сбрасывает cookie сессии DE — иначе Xlib пытается MIT-MAGIC-COOKIE и не подключается к Xvfb (-ac) песочницы.
+func x11PrepareClientEnv() {
+	_ = os.Unsetenv("XAUTHORITY")
+	_ = os.Unsetenv("XAUTHFILE")
+}
 
 const (
 	KeyW      = 0x0077
@@ -570,6 +577,7 @@ func (s *InputSender) startWorker() error {
 
 func (s *InputSender) worker(ready chan<- error, gen int64) {
 	runtime.LockOSThread()
+	x11PrepareClientEnv()
 
 	dispStr := fmt.Sprintf(":%d", s.display)
 	cstr := C.CString(dispStr)

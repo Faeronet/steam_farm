@@ -1,0 +1,22 @@
+# Core dependencies
+numpy>=1.21.0
+opencv-python>=4.5.0
+torch>=1.9.0
+keyboard>=0.13.5
+
+# YOLO
+ultralytics>=8.0.0
+
+# Screen capture options (install based on your needs)
+mss>=6.1.0
+# dxcam  # Windows only, GPU accelerated
+# pygrabber  # For OBS Virtual Camera
+
+# Mouse control (Windows)
+pywin32>=300
+pyautogui>=0.9.50
+pydirectinput>=1.0.4
+pynput>=1.7.0
+
+# Configuration
+# tomli>=2.0.0  # Only needed if using TOML config files

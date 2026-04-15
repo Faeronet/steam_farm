@@ -23,9 +23,7 @@ cmd/desktop/dist/
 
 # --- Python ---
 **/__pycache__/
-**/*.py[cod]
 **/*.pyo
-**/.Python
 **/.venv/
 **/venv/
 **/.pytest_cache/

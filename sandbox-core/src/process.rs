@@ -86,8 +86,10 @@ impl ProcessSupervisor {
         let _ = std::fs::remove_file(&lock_file);
         let _ = std::fs::remove_file(&socket_file);
 
+        // Без TCP sfarm-desktop не сможет подключиться по 127.0.0.1:N.0, если /tmp у процессов разный (PrivateTmp, snap).
+        // Доступ снаружи всё равно режьте firewall; локально слушает порт 6000+display.
         let mut child = Command::new(&xvfb_bin)
-            .args([&display, "-screen", "0", "1280x720x24", "-ac", "-nolisten", "tcp", "+extension", "GLX"])
+            .args([&display, "-screen", "0", "1280x720x24", "-ac", "+extension", "GLX"])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()

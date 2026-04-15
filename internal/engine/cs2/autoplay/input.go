@@ -579,13 +579,25 @@ func (s *InputSender) worker(ready chan<- error, gen int64) {
 	runtime.LockOSThread()
 	x11PrepareClientEnv()
 
-	dispStr := fmt.Sprintf(":%d", s.display)
-	cstr := C.CString(dispStr)
-	defer C.free(unsafe.Pointer(cstr))
-
-	dpy := C.x11_open(cstr)
+	// Сначала unix-сокет :N, затем TCP 127.0.0.1:N.0 (нужен включённый TCP у Xvfb — см. sandbox process.rs).
+	candidates := []string{
+		fmt.Sprintf(":%d", s.display),
+		fmt.Sprintf("127.0.0.1:%d.0", s.display),
+	}
+	var dpy *C.Display
+	var dispStr string
+	for _, cand := range candidates {
+		cs := C.CString(cand)
+		dpy = C.x11_open(cs)
+		C.free(unsafe.Pointer(cs))
+		if dpy != nil {
+			dispStr = cand
+			log.Printf("[X11Input] Opened display %q", cand)
+			break
+		}
+	}
 	if dpy == nil {
-		ready <- fmt.Errorf("cannot open X11 display %s", dispStr)
+		ready <- fmt.Errorf("cannot open X11 display :%d (tried unix :%d and tcp 127.0.0.1:%d.0)", s.display, s.display, s.display)
 		return
 	}
 

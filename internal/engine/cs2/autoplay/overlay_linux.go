@@ -251,12 +251,22 @@ func (o *linuxEnemyOverlay) run() {
 	defer runtime.UnlockOSThread()
 	x11PrepareClientEnv()
 
-	name := C.CString(fmt.Sprintf(":%d", o.display))
-	defer C.free(unsafe.Pointer(name))
 	C.ov_install_error_handler()
-	d := C.XOpenDisplay(name)
+	var d *C.Display
+	for _, cand := range []string{
+		fmt.Sprintf(":%d", o.display),
+		fmt.Sprintf("127.0.0.1:%d.0", o.display),
+	} {
+		name := C.CString(cand)
+		d = C.XOpenDisplay(name)
+		C.free(unsafe.Pointer(name))
+		if d != nil {
+			log.Printf("[CS2Overlay] Opened display %q", cand)
+			break
+		}
+	}
 	if d == nil {
-		log.Printf("[CS2Overlay] XOpenDisplay :%d failed", o.display)
+		log.Printf("[CS2Overlay] XOpenDisplay :%d failed (unix+tcp)", o.display)
 		return
 	}
 	defer C.XCloseDisplay(d)

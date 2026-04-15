@@ -11,7 +11,20 @@ pub struct SteamPaths {
     pub lib_paths: Vec<PathBuf>,
 }
 
+/// Путь к корню Steam (где лежат `steamapps/common`, `ubuntu12_32/steam`).
+/// Если задан — проверяется первым (удобно при запуске sandbox от root, а Steam у обычного пользователя).
+const ENV_STEAM_ROOT: [&str; 2] = ["SFARM_STEAM_ROOT", "STEAM_ROOT"];
+
 pub fn find_steam() -> Option<SteamPaths> {
+    for key in ENV_STEAM_ROOT {
+        if let Ok(s) = std::env::var(key) {
+            let root = PathBuf::from(s.trim());
+            if let Some(paths) = try_steam_root(&root) {
+                return Some(paths);
+            }
+        }
+    }
+
     let home = std::env::var("REAL_HOME")
         .or_else(|_| std::env::var("HOME"))
         .ok()?;
@@ -20,33 +33,45 @@ pub fn find_steam() -> Option<SteamPaths> {
         format!("{}/.local/share/Steam", home),
         format!("{}/.steam/steam", home),
         format!("{}/.steam/debian-installation", home),
+        // Flatpak (com.valvesoftware.Steam)
+        format!(
+            "{}/.var/app/com.valvesoftware.Steam/.local/share/Steam",
+            home
+        ),
+        format!("{}/.var/app/com.valvesoftware.Steam/data/Steam", home),
     ];
 
     for root_str in &candidates {
         let root = PathBuf::from(root_str);
-        let common = root.join("steamapps/common");
-        if !common.is_dir() {
-            continue;
+        if let Some(paths) = try_steam_root(&root) {
+            return Some(paths);
         }
-
-        let steam_binary = root.join("ubuntu12_32/steam");
-        if !steam_binary.exists() {
-            continue;
-        }
-
-        let (ld_linux_32, lib_paths) = build_runtime_paths(&root);
-
-        return Some(SteamPaths {
-            linux64: root.join("linux64"),
-            ubuntu12_32: root.join("ubuntu12_32"),
-            common,
-            steam_binary,
-            ld_linux_32,
-            lib_paths,
-            root,
-        });
     }
     None
+}
+
+fn try_steam_root(root: &PathBuf) -> Option<SteamPaths> {
+    let root = root
+        .canonicalize()
+        .unwrap_or_else(|_| root.clone());
+    let common = root.join("steamapps/common");
+    if !common.is_dir() {
+        return None;
+    }
+    let steam_binary = root.join("ubuntu12_32/steam");
+    if !steam_binary.exists() {
+        return None;
+    }
+    let (ld_linux_32, lib_paths) = build_runtime_paths(&root);
+    Some(SteamPaths {
+        linux64: root.join("linux64"),
+        ubuntu12_32: root.join("ubuntu12_32"),
+        common,
+        steam_binary,
+        ld_linux_32,
+        lib_paths,
+        root,
+    })
 }
 
 fn build_runtime_paths(steam_root: &PathBuf) -> (Option<PathBuf>, Vec<PathBuf>) {

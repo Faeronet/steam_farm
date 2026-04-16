@@ -5,6 +5,14 @@ import (
 	"math/rand"
 )
 
+// Виртуальный «коврик» для интеграции WindMouse: крупные координаты, чтобы не упираться в малые числа;
+// после достижения цели курсор переносится к центру коврика без движения в игре (как поднять мышь).
+const (
+	windPadHalf      = 2048.0
+	windPadRecJitter = 118.0
+	windSettleDist   = 0.22
+)
+
 // windMouseState — потоковый WindMouse: гравитация к цели + «ветер», скорость с обрезкой (Ben Land, ben.land/post/2021/04/25/windmouse-human-mouse-movement/).
 // Цель (dest) накапливается извне; Step() выдаёт целочисленный относительный шаг в пространстве «виртуального» курсора.
 type windMouseState struct {
@@ -18,11 +26,20 @@ type windMouseState struct {
 }
 
 func (w *windMouseState) Reset() {
+	cx := windPadHalf
+	cy := windPadHalf
 	*w = windMouseState{
-		G0: 6.8,
-		W0: 2.05,
-		D0: 8.8,
-		m0: 7.2,
+		// Чуть мягче тяга и шаг — в связке с ease-in цели в smoothMouse.
+		G0: 2.45,
+		W0: 0.78,
+		D0: 8.2,
+		m0: 1.92,
+		curX:   cx,
+		curY:   cy,
+		destX:  cx,
+		destY:  cy,
+		lastQX: int(math.Round(cx)),
+		lastQY: int(math.Round(cy)),
 	}
 }
 
@@ -47,7 +64,7 @@ func (w *windMouseState) distToDest() float64 {
 func (w *windMouseState) Step() (moveDx, moveDy int) {
 	w.ensureInit()
 	dist := w.distToDest()
-	if dist < 0.18 {
+	if dist < 0.14 {
 		return 0, 0
 	}
 
@@ -61,8 +78,8 @@ func (w *windMouseState) Step() (moveDx, moveDy int) {
 	} else {
 		w.windX /= sqrt3
 		w.windY /= sqrt3
-		if w.m0 < 3 {
-			w.m0 = rand.Float64()*3 + 3
+		if w.m0 < 2.1 {
+			w.m0 = 1.85 + rand.Float64()*0.45
 		} else {
 			w.m0 /= sqrt5
 		}
@@ -86,4 +103,21 @@ func (w *windMouseState) Step() (moveDx, moveDy int) {
 	moveDy = qy - w.lastQY
 	w.lastQX, w.lastQY = qx, qy
 	return
+}
+
+// RecenterPadIfSettled переносит внутреннее положение к случайной точке у центра коврика, когда цель уже достигнута.
+// HID не двигается (lastQ синхронизирован с cur) — сбрасывается накопленный «ветер» и дрейф, как при подъёме мыши.
+func (w *windMouseState) RecenterPadIfSettled() {
+	w.ensureInit()
+	if w.distToDest() > windSettleDist {
+		return
+	}
+	nx := windPadHalf + (rand.Float64()*2-1)*windPadRecJitter
+	ny := windPadHalf + (rand.Float64()*2-1)*windPadRecJitter
+	w.curX, w.curY = nx, ny
+	w.destX, w.destY = nx, ny
+	w.velX, w.velY = 0, 0
+	w.windX, w.windY = 0, 0
+	w.lastQX = int(math.Round(w.curX))
+	w.lastQY = int(math.Round(w.curY))
 }

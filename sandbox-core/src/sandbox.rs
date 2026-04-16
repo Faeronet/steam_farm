@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::ipc::{self, IpcEvent, LaunchConfig};
 use crate::monitor;
@@ -30,9 +30,23 @@ fn resolve_sandbox_base(id: u64) -> PathBuf {
     }
 }
 
+/// Снять fuse-overlayfs с каталога игры (иначе remove_dir_all → EBUSY).
+fn unmount_steam_common_overlays(base: &Path) {
+    let common = base.join("home/.local/share/Steam/steamapps/common");
+    for name in ["Counter-Strike Global Offensive", "dota 2 beta"] {
+        let p = common.join(name);
+        if p.exists() {
+            let _ = std::process::Command::new("fusermount")
+                .args(["-uz", &p.display().to_string()])
+                .status();
+        }
+    }
+}
+
 fn setup_dirs(cfg: &LaunchConfig, steam_paths: &steam::SteamPaths) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let base = sandbox_dir(cfg.id, steam_paths);
     if base.exists() {
+        unmount_steam_common_overlays(&base);
         fs::remove_dir_all(&base)?;
     }
 
@@ -81,7 +95,9 @@ XDG_VIDEOS_DIR="$HOME/Videos"
 }
 
 fn cleanup(id: u64) {
-    let _ = fs::remove_dir_all(resolve_sandbox_base(id));
+    let base = resolve_sandbox_base(id);
+    unmount_steam_common_overlays(&base);
+    let _ = fs::remove_dir_all(base);
 }
 
 pub async fn run(cfg: LaunchConfig) -> Result<(), Box<dyn std::error::Error>> {

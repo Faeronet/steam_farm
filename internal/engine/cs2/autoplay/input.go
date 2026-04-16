@@ -167,6 +167,106 @@ static Window x11_find_cs2(Display* d) {
 	return x11_find_cs2_recursive(d, DefaultRootWindow(d), 0, 24);
 }
 
+// Steam Cloud «Out of Date» / sync conflict — модальное окно поверх клиента; xdotool с другого DISPLAY не видит.
+static int x11_fetch_title_utf8(Display* d, Window w, char* buf, size_t bufsz) {
+	if (!buf || bufsz < 4) return 0;
+	buf[0] = 0;
+	Atom utf8 = XInternAtom(d, "UTF8_STRING", False);
+	Atom net_wm_name = XInternAtom(d, "_NET_WM_NAME", False);
+	Atom act_type;
+	int act_fmt;
+	unsigned long nitems, bytes_after;
+	unsigned char* prop = NULL;
+	if (XGetWindowProperty(d, w, net_wm_name, 0, 512, False, utf8,
+			&act_type, &act_fmt, &nitems, &bytes_after, &prop) == Success && prop && nitems > 0) {
+		size_t n = (size_t)nitems < bufsz - 1 ? (size_t)nitems : bufsz - 1;
+		memcpy(buf, prop, n);
+		buf[n] = 0;
+		XFree(prop);
+		return 1;
+	}
+	char* wm_name = NULL;
+	if (XFetchName(d, w, &wm_name) && wm_name) {
+		strncpy(buf, wm_name, bufsz - 1);
+		buf[bufsz - 1] = 0;
+		XFree(wm_name);
+		return 1;
+	}
+	return 0;
+}
+
+static void x11_ascii_lower_inplace(char* s) {
+	if (!s) return;
+	for (; *s; s++) {
+		if (*s >= 'A' && *s <= 'Z') *s = (char)(*s - 'A' + 'a');
+	}
+}
+
+// Совпадает с looksLikeSteamCloudSaveDialogTitle (steam_dialog_linux.go).
+static int x11_title_is_steam_cloud_dialog(const char* title) {
+	if (!title || !title[0]) return 0;
+	char low[768];
+	strncpy(low, title, sizeof(low) - 1);
+	low[sizeof(low) - 1] = 0;
+	x11_ascii_lower_inplace(low);
+	if (!strstr(low, "cloud")) return 0;
+	if (strstr(low, "out of date") || strstr(low, "outdated")) return 1;
+	if (strstr(low, "not yet")) return 1;
+	if (strstr(low, "upload")) return 1;
+	if (strstr(low, "conflict")) return 1;
+	if (strstr(low, "sync")) return 1;
+	return 0;
+}
+
+static Window x11_find_steam_cloud_dialog_r(Display* d, Window w, int depth, int max_depth) {
+	if (depth > max_depth) return 0;
+
+	char title[768];
+	if (x11_fetch_title_utf8(d, w, title, sizeof(title)) && x11_title_is_steam_cloud_dialog(title))
+		return w;
+
+	Window root_ret, parent_ret;
+	Window* children = NULL;
+	unsigned int nchildren = 0;
+	if (!XQueryTree(d, w, &root_ret, &parent_ret, &children, &nchildren))
+		return 0;
+
+	Window found = 0;
+	for (unsigned int i = 0; i < nchildren && !found; i++) {
+		found = x11_find_steam_cloud_dialog_r(d, children[i], depth + 1, max_depth);
+	}
+	if (children) XFree(children);
+	return found;
+}
+
+// 1 = нашли окно и отправили клавиши (Enter или Tab+Enter). Не static — вызывается из Go worker.
+int x11_dismiss_steam_cloud_dialog(Display* d, int use_tab_before_return) {
+	Window w = x11_find_steam_cloud_dialog_r(d, DefaultRootWindow(d), 0, 24);
+	if (!w) return 0;
+
+	XRaiseWindow(d, w);
+	XSetInputFocus(d, w, RevertToParent, CurrentTime);
+	XFlush(d);
+	usleep(150000);
+
+	if (use_tab_before_return) {
+		KeyCode tab = XKeysymToKeycode(d, 0xff09);
+		if (tab) {
+			XTestFakeKeyEvent(d, tab, True, CurrentTime);
+			XTestFakeKeyEvent(d, tab, False, CurrentTime);
+			XFlush(d);
+			usleep(50000);
+		}
+	}
+
+	KeyCode kc = XKeysymToKeycode(d, 0xff0d);
+	if (!kc) return 0;
+	XTestFakeKeyEvent(d, kc, True, CurrentTime);
+	XTestFakeKeyEvent(d, kc, False, CurrentTime);
+	XFlush(d);
+	return 1;
+}
+
 // Focus the CS2 window. Uses cached window ID if still valid.
 static int x11_focus_game(Display* d) {
 	// Validate cached window
@@ -460,6 +560,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -514,6 +615,7 @@ const (
 	cmdGrabGrayRect // a=x0 b=y0 c=w d=h → grabGrayChan
 	cmdGrabRGBRect  // a=x0 b=y0 c=w d=h → grabRGBChan (RGB interleaved, len w*h*3)
 	cmdCS2ClientSize
+	cmdDismissSteamCloud // a=1 → Tab перед Enter (SFARM_STEAM_CLOUD_KEYS=tab,return)
 	cmdQuit
 )
 
@@ -525,30 +627,32 @@ type x11Cmd struct {
 }
 
 type InputSender struct {
-	display      int
-	cmds         chan x11Cmd
-	pong         chan struct{}
-	hasCS2Chan   chan bool
-	grabGrayChan chan []byte
-	grabRGBChan  chan []byte
-	cs2SizeChan  chan [2]int
-	done         chan struct{}
-	mu           sync.Mutex
-	closed       bool
-	alive        atomic.Bool
-	workerGen    atomic.Int64
+	display          int
+	cmds             chan x11Cmd
+	pong             chan struct{}
+	hasCS2Chan       chan bool
+	grabGrayChan     chan []byte
+	grabRGBChan      chan []byte
+	cs2SizeChan      chan [2]int
+	steamDismissChan chan bool
+	done             chan struct{}
+	mu               sync.Mutex
+	closed           bool
+	alive            atomic.Bool
+	workerGen        atomic.Int64
 }
 
 func NewInputSender(display int) (*InputSender, error) {
 	s := &InputSender{
-		display:      display,
-		cmds:         make(chan x11Cmd, 512),
-		pong:         make(chan struct{}, 1),
-		hasCS2Chan:   make(chan bool, 1),
-		grabGrayChan: make(chan []byte, 2),
-		grabRGBChan:  make(chan []byte, 2),
-		cs2SizeChan:  make(chan [2]int, 1),
-		done:         make(chan struct{}),
+		display:          display,
+		cmds:             make(chan x11Cmd, 512),
+		pong:             make(chan struct{}, 1),
+		hasCS2Chan:       make(chan bool, 1),
+		grabGrayChan:     make(chan []byte, 2),
+		grabRGBChan:      make(chan []byte, 2),
+		cs2SizeChan:      make(chan [2]int, 1),
+		steamDismissChan: make(chan bool, 1),
+		done:             make(chan struct{}),
 	}
 
 	const maxAttempts = 30
@@ -704,6 +808,12 @@ func (s *InputSender) worker(ready chan<- error, gen int64) {
 			case s.cs2SizeChan <- sz:
 			default:
 			}
+		case cmdDismissSteamCloud:
+			ok := C.x11_dismiss_steam_cloud_dialog(dpy, C.int(cmd.a))
+			select {
+			case s.steamDismissChan <- (ok != 0):
+			default:
+			}
 		case cmdQuit:
 			C.x11_close(dpy)
 			s.alive.Store(false)
@@ -790,6 +900,40 @@ func (s *InputSender) ClickAt(x, y, button int) {
 }
 
 func (s *InputSender) FocusGame()            { s.send(x11Cmd{kind: cmdFocus}) }
+
+// TryDismissSteamCloudDialog — модальное «Cloud Out of Date» на том же X11, что и ввод (без xdotool/DISPLAY).
+// Учитывает SFARM_STEAM_CLOUD_KEYS=tab,return. Возвращает true, если окно найдено и отправлены клавиши.
+func (s *InputSender) TryDismissSteamCloudDialog() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return false
+	}
+	for len(s.steamDismissChan) > 0 {
+		<-s.steamDismissChan
+	}
+	tab := strings.EqualFold(strings.TrimSpace(os.Getenv("SFARM_STEAM_CLOUD_KEYS")), "tab,return")
+	a := 0
+	if tab {
+		a = 1
+	}
+	select {
+	case s.cmds <- x11Cmd{kind: cmdDismissSteamCloud, a: a}:
+	case <-time.After(2 * time.Second):
+		return false
+	}
+	select {
+	case r := <-s.steamDismissChan:
+		return r
+	case <-time.After(600 * time.Millisecond):
+		return false
+	}
+}
+
 func (s *InputSender) ListWindows()          { s.send(x11Cmd{kind: cmdListWindows}) }
 func (s *InputSender) InvalidateWindowCache() { s.send(x11Cmd{kind: cmdInvalidateCache}) }
 

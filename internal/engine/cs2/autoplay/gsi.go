@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 )
 
@@ -26,7 +28,7 @@ type GSIState struct {
 	} `json:"map"`
 	Player *struct {
 		SteamID  string `json:"steamid"`
-		Activity string `json:"activity"` // "playing", "menu", "textinput"
+		Activity string `json:"activity"` // "playing", "menu", "textinput"; в матче на сервере часто пусто
 		// World position from GSI when cfg enables player_position ("x, y, z").
 		Position string `json:"position"`
 		State    *struct {
@@ -53,6 +55,14 @@ type GSIServer struct {
 	latest map[string]*GSIState // steamid -> latest state (last POST)
 	// byAccount: один обработчик на аккаунт; маршрутизация по provider.steamid (не перезаписываем второй слот).
 	byAccount map[int64]*gsiAccountHandler
+
+	// gsiSteamBind: provider.steamid из POST -> account_id, если в БД steam_id пуст (несколько песочниц).
+	gsiSteamBind   map[string]int64
+	gsiSteamBindMu sync.Mutex
+
+	// lazyRegOrder: порядок Register с пустым steam_id — привязка steam из GSI к боту в порядке запуска, не по account id.
+	lazyRegMu    sync.Mutex
+	lazyRegOrder []int64
 }
 
 func NewGSIServer() *GSIServer {
@@ -82,13 +92,21 @@ func (gs *GSIServer) Stop() {
 	gs.server.Close()
 }
 
-// RegisterAccountHandler привязывает GSI к account_id. Нужен непустой steamID (как в gamestate provider),
-// иначе POST не маршрутизируется (заполните steam_id у аккаунта в БД / UI).
+// RegisterAccountHandler привязывает GSI к account_id. Пустой steam_id: ленивая привязка по первым POST (см. gsiSteamBind); для надёжности при 2+ ботах укажите steam_id в БД.
 func (gs *GSIServer) RegisterAccountHandler(accountID int64, steamID string, fn func(*GSIState)) {
 	gs.mu.Lock()
 	defer gs.mu.Unlock()
 	if steamID == "" {
-		log.Printf("[GSI] account %d: steam_id пуст — GSI не будет доставляться этому боту; укажите steam_id аккаунта", accountID)
+		nEmpty := 0
+		for id, prev := range gs.byAccount {
+			if id != accountID && prev != nil && strings.TrimSpace(prev.steamID) == "" {
+				nEmpty++
+			}
+		}
+		log.Printf("[GSI] account %d: steam_id в БД пуст — GSI привяжется по provider из CS2 (lazy-bind); при нескольких таких ботаx надёжнее задать steam_id в UI", accountID)
+		if nEmpty >= 1 {
+			log.Printf("[GSI] подсказка: уже есть другой бот без steam_id — заполните steam_id у обоих, иначе возможна путаница до первых POST")
+		}
 	}
 	if steamID != "" {
 		for id, prev := range gs.byAccount {
@@ -99,12 +117,37 @@ func (gs *GSIServer) RegisterAccountHandler(accountID int64, steamID string, fn 
 		}
 	}
 	gs.byAccount[accountID] = &gsiAccountHandler{steamID: steamID, fn: fn}
+	if strings.TrimSpace(steamID) == "" {
+		gs.lazyRegMu.Lock()
+		gs.lazyRegOrder = append(gs.lazyRegOrder, accountID)
+		gs.lazyRegMu.Unlock()
+	}
 }
 
 func (gs *GSIServer) UnregisterAccountHandler(accountID int64) {
 	gs.mu.Lock()
-	defer gs.mu.Unlock()
 	delete(gs.byAccount, accountID)
+	gs.mu.Unlock()
+
+	gs.lazyRegMu.Lock()
+	lro := gs.lazyRegOrder[:0]
+	for _, id := range gs.lazyRegOrder {
+		if id != accountID {
+			lro = append(lro, id)
+		}
+	}
+	gs.lazyRegOrder = lro
+	gs.lazyRegMu.Unlock()
+
+	gs.gsiSteamBindMu.Lock()
+	if gs.gsiSteamBind != nil {
+		for sid, aid := range gs.gsiSteamBind {
+			if aid == accountID {
+				delete(gs.gsiSteamBind, sid)
+			}
+		}
+	}
+	gs.gsiSteamBindMu.Unlock()
 }
 
 func (gs *GSIServer) GetState(steamID string) *GSIState {
@@ -145,11 +188,88 @@ func (gs *GSIServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	gs.mu.Unlock()
 
+	// 1) Точное совпадение provider/player steamid с полем в БД.
+	matched := false
 	for _, reg := range handlers {
-		if reg == nil || reg.fn == nil || reg.steamID == "" || reg.steamID != steamID {
+		if reg == nil || reg.fn == nil {
 			continue
 		}
-		reg.fn(&state)
+		sid := strings.TrimSpace(reg.steamID)
+		if sid != "" && steamID != "" && sid == steamID {
+			reg.fn(&state)
+			matched = true
+		}
+	}
+	if matched {
+		w.WriteHeader(200)
+		return
+	}
+
+	// 2) В БД steam_id пуст: ленивая привязка steam из GSI к account_id (несколько ботов на одном :30000).
+	// Порядок мьютексов: сначала gs.mu, потом gsiSteamBindMu — как в UnregisterAccountHandler (без взаимной блокировки).
+	if steamID == "" {
+		w.WriteHeader(200)
+		return
+	}
+
+	gs.mu.RLock()
+	var emptyIDs []int64
+	for aid, reg := range gs.byAccount {
+		if reg != nil && strings.TrimSpace(reg.steamID) == "" {
+			emptyIDs = append(emptyIDs, aid)
+		}
+	}
+	gs.mu.RUnlock()
+	emptySet := make(map[int64]bool)
+	for _, id := range emptyIDs {
+		emptySet[id] = true
+	}
+	gs.lazyRegMu.Lock()
+	regOrder := append([]int64(nil), gs.lazyRegOrder...)
+	gs.lazyRegMu.Unlock()
+	var candidates []int64
+	for _, aid := range regOrder {
+		if emptySet[aid] {
+			candidates = append(candidates, aid)
+		}
+	}
+	if len(candidates) == 0 {
+		candidates = emptyIDs
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i] < candidates[j] })
+	}
+
+	var targetAcc int64
+	var have bool
+	gs.gsiSteamBindMu.Lock()
+	if gs.gsiSteamBind == nil {
+		gs.gsiSteamBind = make(map[string]int64)
+	}
+	targetAcc, have = gs.gsiSteamBind[steamID]
+	if !have {
+		usedAcc := make(map[int64]bool)
+		for _, aid := range gs.gsiSteamBind {
+			usedAcc[aid] = true
+		}
+		for _, aid := range candidates {
+			if usedAcc[aid] {
+				continue
+			}
+			gs.gsiSteamBind[steamID] = aid
+			targetAcc = aid
+			have = true
+			log.Printf("[GSI] lazy-bind steam_id=%s -> account %d (порядок запуска ботов; steam_id в UI надёжнее)", steamID, aid)
+			break
+		}
+	}
+	gs.gsiSteamBindMu.Unlock()
+
+	if have {
+		gs.mu.RLock()
+		reg := gs.byAccount[targetAcc]
+		gs.mu.RUnlock()
+		if reg != nil && reg.fn != nil {
+			reg.fn(&state)
+		}
 	}
 	w.WriteHeader(200)
 }

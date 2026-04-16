@@ -37,15 +37,15 @@ func (p *VNCProxy) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	port, err := strconv.Atoi(parts[0])
-	if err != nil || port < 5900 || port > 6100 {
+	// Не ограничивать 5900–6100: бывают 5800+N, кастомные порты Docker и т.д.
+	if err != nil || port < 1024 || port > 65535 {
 		http.Error(w, "invalid VNC port", http.StatusBadRequest)
 		return
 	}
 
-	vncAddr := fmt.Sprintf("127.0.0.1:%d", port)
-	vncConn, err := net.DialTimeout("tcp", vncAddr, 3*time.Second)
+	vncConn, vncAddrUsed, err := dialVNCLocalhost(port)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("cannot connect to VNC at %s: %v", vncAddr, err), http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf("cannot connect to VNC on port %d (tried 127.0.0.1 and ::1): %v", port, err), http.StatusBadGateway)
 		return
 	}
 
@@ -56,7 +56,7 @@ func (p *VNCProxy) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[VNC Proxy] Bridging WebSocket <-> VNC port %d", port)
+	log.Printf("[VNC Proxy] Bridging WebSocket <-> VNC %s (port %d)", vncAddrUsed, port)
 
 	go func() {
 		defer vncConn.Close()
@@ -84,9 +84,30 @@ func (p *VNCProxy) Handle(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
+			if n == 0 {
+				continue
+			}
 			if err := wsConn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
 				return
 			}
 		}
 	}()
+}
+
+// dialVNCLocalhost: x11vnc иногда слушает только IPv6 [::], тогда 127.0.0.1 не подключается.
+func dialVNCLocalhost(port int) (net.Conn, string, error) {
+	d := net.Dialer{Timeout: 5 * time.Second}
+	addrs := []string{
+		fmt.Sprintf("127.0.0.1:%d", port),
+		fmt.Sprintf("[::1]:%d", port),
+	}
+	var lastErr error
+	for _, a := range addrs {
+		c, err := d.Dial("tcp", a)
+		if err == nil {
+			return c, a, nil
+		}
+		lastErr = err
+	}
+	return nil, "", lastErr
 }

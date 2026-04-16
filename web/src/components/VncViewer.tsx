@@ -29,9 +29,8 @@ export default function VncViewer({ port, className, viewOnly = false, onStatusC
     const url = `${protocol}//${window.location.host}/vnc/${port}`;
 
     try {
-      const rfb = new RFB(containerRef.current, url, {
-        wsProtocols: [],
-      });
+      // Без wsProtocols: пустой массив в WebSocket(url, []) в части браузеров ломает рукопожатие.
+      const rfb = new RFB(containerRef.current, url);
 
       rfb.viewOnly = viewOnly;
       rfb.scaleViewport = true;
@@ -66,10 +65,10 @@ export default function VncViewer({ port, className, viewOnly = false, onStatusC
   }, [connect]);
 
   return (
-    <div className={className}>
+    <div className={`relative min-h-0 ${className ?? ''}`}>
       <div
         ref={containerRef}
-        className="w-full h-full bg-black rounded-lg overflow-hidden"
+        className="w-full h-full bg-black rounded-lg overflow-hidden min-h-[120px]"
         style={{ cursor: viewOnly ? 'default' : 'crosshair' }}
       />
       {status !== 'connected' && (

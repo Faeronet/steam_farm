@@ -4,6 +4,6 @@ package autoplay
 
 import "time"
 
-func maybeDismissSteamDialogs(_ int, _ *time.Time) {}
+func maybeDismissSteamDialogs(_ *InputSender, _ int, _ *time.Time) bool { return false }
 
-func dismissSteamLikeDialogs(_ int, _ *time.Time, _ bool) {}
+func dismissSteamLikeDialogs(_ int, _ *time.Time, _ bool) bool { return false }

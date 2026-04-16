@@ -12,31 +12,283 @@ import (
 	"time"
 )
 
-const steamDialogDismissCooldown = 8 * time.Second
+const steamDialogDismissCooldown = 3 * time.Second
 
-// maybeDismissSteamDialogs закрывает типичные Steam-уведомления (Remote Play и т.д.).
-func maybeDismissSteamDialogs(display int, lastRun *time.Time) {
-	dismissSteamLikeDialogs(display, lastRun, false)
-}
-
-// dismissSteamLikeDialogs — Remote Play + отдельные X-окна с «OK» / disconnect (xdotool).
-// force=true игнорирует cooldown (при повторной постановке после кика).
-func dismissSteamLikeDialogs(display int, lastRun *time.Time, force bool) {
-	if !force && lastRun != nil && time.Since(*lastRun) < steamDialogDismissCooldown {
-		return
+// maybeDismissSteamDialogs закрывает Steam Cloud, CS2 «Disconnected», Steam Remote Play и т.д.
+// Возвращает true, если закрыто окно, после которого нужен повторный поиск матча (Disconnected / kick / connection lost).
+func maybeDismissSteamDialogs(input *InputSender, display int, lastRun *time.Time) (needsRematch bool) {
+	if lastRun != nil && time.Since(*lastRun) < steamDialogDismissCooldown {
+		return false
+	}
+	// Тот же X11/XTest, что и игровой ввод — обходит отсутствие xdotool и расхождение DISPLAY.
+	if input != nil && input.TryDismissSteamCloudDialog() {
+		if lastRun != nil {
+			*lastRun = time.Now()
+		}
+		log.Printf("[CS2Bot:%s] Auto-dismissed Steam Cloud dialog (X11/XTest)", steamDisplayEnv(display))
+		return false
 	}
 	if strings.TrimSpace(os.Getenv("SFARM_STEAM_XDOTOOL")) == "0" {
-		return
+		return false
 	}
 	if _, err := exec.LookPath("xdotool"); err != nil {
-		return
+		return false
+	}
+	if dismissSteamCloudDialogs(display) {
+		if lastRun != nil {
+			*lastRun = time.Now()
+		}
+		return false
+	}
+	return dismissSteamLikeDialogs(display, lastRun, false)
+}
+
+func steamDisplayEnv(display int) string {
+	if display < 0 {
+		return ":0"
+	}
+	return fmt.Sprintf(":%d", display)
+}
+
+// x11DisplayCandidatesForXdotool совпадает с порядком в input.go (worker): unix :N, затем TCP 127.0.0.1:N.0.
+// Xvfb в sandbox слушает TCP (process.rs -listen tcp); если у sfarm-desktop другой /tmp, сокета нет — ввод уже идёт по TCP, а xdotool с одним «:N» смотрел не на тот сервер.
+func x11DisplayCandidatesForXdotool(display int) []string {
+	if v := strings.TrimSpace(os.Getenv("SFARM_X11_DISPLAY")); v != "" {
+		return []string{v}
+	}
+	if display < 0 {
+		return []string{":0"}
+	}
+	return []string{
+		fmt.Sprintf(":%d", display),
+		fmt.Sprintf("127.0.0.1:%d.0", display),
+	}
+}
+
+// xdotoolSearchWIDs ищет окна по подстроке WM_NAME; сначала --all (дочерние/модальные окна Steam часто не «onlyvisible»).
+func xdotoolSearchWIDs(env []string, nameSubstr string) []string {
+	var tries [][]string
+	for _, limit := range []string{"64", "32", "12"} {
+		tries = append(tries, []string{"search", "--all", "--name", "--limit", limit, nameSubstr})
+		tries = append(tries, []string{"search", "--onlyvisible", "--name", "--limit", limit, nameSubstr})
+		tries = append(tries, []string{"search", "--name", "--limit", limit, nameSubstr})
+	}
+	for _, args := range tries {
+		cmd := exec.Command("xdotool", args...)
+		cmd.Env = env
+		out, err := cmd.Output()
+		if err != nil || len(bytes.TrimSpace(out)) == 0 {
+			continue
+		}
+		fields := strings.Fields(strings.TrimSpace(string(out)))
+		if len(fields) > 0 {
+			return fields
+		}
+	}
+	return nil
+}
+
+func xdotoolWindowName(env []string, wid string) string {
+	cmd := exec.Command("xdotool", "getwindowname", wid)
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// xdotoolAllWindowIDs — полный перебор WM_NAME (regex), чтобы поймать заголовки вне search --limit.
+func xdotoolAllWindowIDs(env []string) []string {
+	for _, pat := range []string{".*", "."} {
+		cmd := exec.Command("xdotool", "search", "--all", "--name", pat, "--limit", "512")
+		cmd.Env = env
+		out, err := cmd.Output()
+		if err != nil || len(bytes.TrimSpace(out)) == 0 {
+			continue
+		}
+		fields := strings.Fields(strings.TrimSpace(string(out)))
+		if len(fields) > 0 {
+			return fields
+		}
+	}
+	return nil
+}
+
+func looksLikeSteamCloudSaveDialogTitle(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	if !strings.Contains(n, "cloud") {
+		return false
+	}
+	// «Cloud Out of Date», конфликт синхронизации, «not yet in the cloud» в тексте заголовка редко
+	return strings.Contains(n, "out of date") ||
+		strings.Contains(n, "outdated") ||
+		strings.Contains(n, "not yet") ||
+		strings.Contains(n, "upload") ||
+		strings.Contains(n, "conflict") ||
+		strings.Contains(n, "sync")
+}
+
+func steamCloudDialogWIDsByNameScan(env []string) []string {
+	wids := xdotoolAllWindowIDs(env)
+	if len(wids) == 0 {
+		return nil
+	}
+	debug := strings.TrimSpace(os.Getenv("SFARM_STEAM_XDOTOOL_DEBUG")) == "1"
+	var out []string
+	seen := make(map[string]struct{})
+	for _, wid := range wids {
+		name := xdotoolWindowName(env, wid)
+		if debug && strings.Contains(strings.ToLower(name), "cloud") {
+			log.Printf("[CS2Bot][xdotool-debug] wid=%s name=%q", wid, name)
+		}
+		if !looksLikeSteamCloudSaveDialogTitle(name) {
+			continue
+		}
+		if _, ok := seen[wid]; ok {
+			continue
+		}
+		seen[wid] = struct{}{}
+		out = append(out, wid)
+	}
+	return out
+}
+
+func xdotoolSearchWIDsByClass(env []string, classSubstr string) []string {
+	var tries [][]string
+	for _, limit := range []string{"64", "32"} {
+		tries = append(tries, []string{"search", "--all", "--class", classSubstr, "--limit", limit})
+		tries = append(tries, []string{"search", "--onlyvisible", "--class", classSubstr, "--limit", limit})
+	}
+	for _, args := range tries {
+		cmd := exec.Command("xdotool", args...)
+		cmd.Env = env
+		out, err := cmd.Output()
+		if err != nil || len(bytes.TrimSpace(out)) == 0 {
+			continue
+		}
+		fields := strings.Fields(strings.TrimSpace(string(out)))
+		if len(fields) > 0 {
+			return fields
+		}
+	}
+	return nil
+}
+
+func raiseAndActivateWindow(env []string, wid string) bool {
+	for _, args := range [][]string{
+		{"windowmap", wid},
+		{"windowraise", wid},
+	} {
+		cmd := exec.Command("xdotool", args...)
+		cmd.Env = env
+		_ = cmd.Run()
+	}
+	act := exec.Command("xdotool", "windowactivate", "--sync", wid)
+	act.Env = env
+	return act.Run() == nil
+}
+
+func tryDismissWindowKeys(env []string, wid string, keys ...string) bool {
+	if !raiseAndActivateWindow(env, wid) {
+		return false
+	}
+	time.Sleep(110 * time.Millisecond)
+	args := append([]string{"key", "--window", wid}, keys...)
+	cmd := exec.Command("xdotool", args...)
+	cmd.Env = env
+	return cmd.Run() == nil
+}
+
+func tryDismissWindow(env []string, wid string) bool {
+	return tryDismissWindowKeys(env, wid, "Return")
+}
+
+
+// dismissSteamCloudDialogs — «Cloud Out of Date» / конфликт облака — «Play anyway».
+func dismissSteamCloudDialogs(display int) bool {
+	for _, disp := range x11DisplayCandidatesForXdotool(display) {
+		env := append(os.Environ(), "DISPLAY="+disp)
+		if dismissSteamCloudDialogsOnEnv(disp, env) {
+			return true
+		}
+	}
+	return false
+}
+
+func dismissSteamCloudDialogsOnEnv(disp string, env []string) bool {
+	titles := []string{
+		"Cloud Out of Date",
+		"Cloud out of date",
+		"cloud out of date",
 	}
 
-	disp := steamDisplayEnv(display)
-	env := append(os.Environ(), "DISPLAY="+disp)
+	tryCloud := func(wid string, via string) bool {
+		var ok bool
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("SFARM_STEAM_CLOUD_KEYS")), "tab,return") {
+			ok = tryDismissWindowKeys(env, wid, "Tab", "Return")
+		} else {
+			ok = tryDismissWindow(env, wid)
+		}
+		if !ok {
+			return false
+		}
+		log.Printf("[CS2Bot:%s] Auto-dismissed Steam Cloud dialog (via %s wid=%s name=%q)", disp, via, wid, xdotoolWindowName(env, wid))
+		return true
+	}
+
+	for _, t := range titles {
+		for _, wid := range xdotoolSearchWIDs(env, t) {
+			if tryCloud(wid, "search:"+t) {
+				return true
+			}
+		}
+	}
+	for _, wid := range steamCloudDialogWIDsByNameScan(env) {
+		if tryCloud(wid, "scan") {
+			return true
+		}
+	}
+	for _, cls := range []string{"Steam", "steam"} {
+		for _, wid := range xdotoolSearchWIDsByClass(env, cls) {
+			name := xdotoolWindowName(env, wid)
+			if !looksLikeSteamCloudSaveDialogTitle(name) {
+				continue
+			}
+			if tryCloud(wid, "class:"+cls) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func patternNeedsRematch(pattern string) bool {
+	p := strings.ToLower(pattern)
+	return strings.Contains(p, "disconnect") ||
+		strings.Contains(p, "connection failed") ||
+		strings.Contains(p, "kicked") ||
+		strings.Contains(p, "you were disconnected") ||
+		strings.Contains(p, "remote host") ||
+		strings.Contains(p, "отключ")
+}
+
+// dismissSteamLikeDialogs — CS2 «Disconnected», Steam Remote Play, OK-диалоги. Возвращает true = нужен re-queue матча.
+func dismissSteamLikeDialogs(display int, lastRun *time.Time, force bool) bool {
+	if !force && lastRun != nil && time.Since(*lastRun) < steamDialogDismissCooldown {
+		return false
+	}
+	if strings.TrimSpace(os.Getenv("SFARM_STEAM_XDOTOOL")) == "0" {
+		return false
+	}
+	if _, err := exec.LookPath("xdotool"); err != nil {
+		return false
+	}
 
 	titles := []string{
-		// Remote Play / streaming
 		"Remote Play",
 		"PLAY AWAY",
 		"Play Away",
@@ -46,14 +298,15 @@ func dismissSteamLikeDialogs(display int, lastRun *time.Time, force bool) {
 		"In Home Streaming",
 		"Someone is playing",
 		"Удалённая игра",
-		// «Сессия на другом устройстве» / Launching CS2
 		"another device",
 		"Another device",
 		"currently playing",
 		"Launching Counter-Strike",
 		"play here instead",
-		// Окна «ОК» / обрыв сессии / Steam
+		"The remote host",
+		"remote host closed",
 		"Disconnected",
+		"Отключено",
 		"Connection failed",
 		"Connection Failed",
 		"Kicked",
@@ -67,41 +320,22 @@ func dismissSteamLikeDialogs(display int, lastRun *time.Time, force bool) {
 	}
 
 	now := time.Now()
-	for _, t := range titles {
-		cmd := exec.Command("xdotool", "search", "--name", t)
-		cmd.Env = env
-		out, err := cmd.Output()
-		if err != nil || len(bytes.TrimSpace(out)) == 0 {
-			continue
+	for _, disp := range x11DisplayCandidatesForXdotool(display) {
+		env := append(os.Environ(), "DISPLAY="+disp)
+		for _, t := range titles {
+			wids := xdotoolSearchWIDs(env, t)
+			for _, wid := range wids {
+				if !tryDismissWindow(env, wid) {
+					continue
+				}
+				if lastRun != nil {
+					*lastRun = now
+				}
+				rem := patternNeedsRematch(t)
+				log.Printf("[CS2Bot:%s] Auto-dismissed dialog (xdotool name~%q wid=%s rematch=%v)", disp, t, wid, rem)
+				return rem
+			}
 		}
-		fields := strings.Fields(strings.TrimSpace(string(out)))
-		if len(fields) == 0 {
-			continue
-		}
-		wid := fields[len(fields)-1]
-
-		act := exec.Command("xdotool", "windowactivate", "--sync", wid)
-		act.Env = env
-		if err := act.Run(); err != nil {
-			continue
-		}
-		time.Sleep(90 * time.Millisecond)
-		key := exec.Command("xdotool", "key", "--window", wid, "Return")
-		key.Env = env
-		if err := key.Run(); err != nil {
-			continue
-		}
-		if lastRun != nil {
-			*lastRun = now
-		}
-		log.Printf("[CS2Bot:%s] Auto-dismissed dialog (xdotool title~%q window=%s)", disp, t, wid)
-		return
 	}
-}
-
-func steamDisplayEnv(display int) string {
-	if display < 0 {
-		return ":0"
-	}
-	return fmt.Sprintf(":%d", display)
+	return false
 }

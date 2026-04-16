@@ -587,7 +587,7 @@ func logSigScanDeferredThrottled(display int) {
 	}
 	linuxSigScanDeferLogAt[display] = now
 	linuxSigScanDeferLogMu.Unlock()
-	msg := "sigscanner: отложен до управляемого спавна (как SFARM_CS2_MEM_MATCH_GATE) — в GSI нужны map, activity=playing, hp>0 и не freezetime; раньше: SFARM_CS2_MEM_MATCH_GATE=0"
+	msg := "sigscanner: отложен до управляемого спавна (как SFARM_CS2_MEM_MATCH_GATE) — в GSI нужны map, in-world activity (playing или пустая на сервере), hp>0 и не freezetime; раньше: SFARM_CS2_MEM_MATCH_GATE=0"
 	log.Printf("[CS2Mem:%d] %s", display, msg)
 	if fn := SigScanLogFunc; fn != nil {
 		fn("info", msg)
@@ -1080,6 +1080,11 @@ func cs2PIDForDisplay(display int, sandboxAccountID int64) (int, bool) {
 			if err == nil && p > 0 {
 				return p, true
 			}
+		}
+	}
+	if sandboxAccountID > 0 {
+		if p, ok := sandboxReportedCS2PIDAlive(sandboxAccountID); ok {
+			return p, true
 		}
 	}
 	if len(pids) == 0 {

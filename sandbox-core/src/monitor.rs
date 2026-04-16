@@ -78,6 +78,8 @@ pub async fn run(game_pid: Option<u32>) {
         prev_total = stat.utime + stat.stime;
     }
 
+    let mut last_cs2_emit: Option<u32> = None;
+
     loop {
         tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -98,6 +100,26 @@ pub async fn run(game_pid: Option<u32>) {
         let monitored: Vec<u32> = all_pids.into_iter()
             .filter(|&p| p != supervisor_pid)
             .collect();
+
+        // Сообщаем PID cs2 в desktop: у пользователя pgrep не видит root/hidepid.
+        let mut cs2_child: Option<u32> = None;
+        for &p in &monitored {
+            let Ok(content) = fs::read_to_string(format!("/proc/{}/comm", p)) else {
+                continue;
+            };
+            if content.trim() == "cs2" {
+                cs2_child = Some(p);
+                break;
+            }
+        }
+        if cs2_child != last_cs2_emit {
+            if let Some(pid) = cs2_child {
+                ipc::emit(&IpcEvent::Cs2Pid { pid });
+            } else if last_cs2_emit.is_some() {
+                ipc::emit(&IpcEvent::Cs2Pid { pid: 0 });
+            }
+            last_cs2_emit = cs2_child;
+        }
 
         if monitored.is_empty() {
             if fs::metadata(format!("/proc/{}", pid)).is_err() {

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/faeronet/steam-farm-system/internal/engine/cs2/autoplay"
 )
 
 type ContainerStatus string
@@ -32,6 +34,7 @@ type ContainerInfo struct {
 	CPUPercent float64         `json:"cpu_percent"`
 	MemoryMB   int             `json:"memory_mb"`
 	Display    string          `json:"display"`
+	CS2PID     int             `json:"cs2_pid,omitempty"`
 }
 
 type Manager struct {
@@ -126,10 +129,28 @@ func (m *Manager) watchInstance(accountID int64, inst *NativeInstance) {
 				info.MemoryMB = int(ev.MemoryMB)
 			}
 			m.mu.Unlock()
+		case "cs2_pid":
+			if ev.PID == 0 {
+				autoplay.ClearSandboxReportedCS2PID(accountID)
+				m.mu.Lock()
+				if info, ok := m.containers[accountID]; ok {
+					info.CS2PID = 0
+				}
+				m.mu.Unlock()
+			} else if ev.PID > 0 {
+				autoplay.SetSandboxReportedCS2PID(accountID, int(ev.PID))
+				m.mu.Lock()
+				if info, ok := m.containers[accountID]; ok {
+					info.CS2PID = int(ev.PID)
+				}
+				m.mu.Unlock()
+			}
 		case "exited":
+			autoplay.ClearSandboxReportedCS2PID(accountID)
 			m.mu.Lock()
 			if info, ok := m.containers[accountID]; ok {
 				info.Status = ContainerStopped
+				info.CS2PID = 0
 			}
 			delete(m.instances, accountID)
 			m.mu.Unlock()
@@ -179,6 +200,7 @@ func (m *Manager) Stop(ctx context.Context, accountID int64) error {
 	delete(m.containers, accountID)
 	delete(m.instances, accountID)
 	m.mu.Unlock()
+	autoplay.ClearSandboxReportedCS2PID(accountID)
 
 	return nil
 }

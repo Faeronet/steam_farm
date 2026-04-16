@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
@@ -28,20 +29,6 @@ fn find_bin(name: &str) -> String {
         }
     }
     name.to_string()
-}
-
-fn lib_path() -> String {
-    let local_lib = self_dir().join("lib");
-    if local_lib.is_dir() {
-        let existing = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-        if existing.is_empty() {
-            local_lib.display().to_string()
-        } else {
-            format!("{}:{}", local_lib.display(), existing)
-        }
-    } else {
-        std::env::var("LD_LIBRARY_PATH").unwrap_or_default()
-    }
 }
 
 fn snap_steam_available() -> bool {
@@ -172,7 +159,6 @@ impl ProcessSupervisor {
         let vnc_bin = find_bin("x11vnc");
         let display = format!(":{}", self.cfg.display);
         let port = self.cfg.vnc_port.to_string();
-        let ld = lib_path();
 
         // Kill any orphaned x11vnc on the same port
         let _ = std::process::Command::new("sh")
@@ -181,14 +167,21 @@ impl ProcessSupervisor {
             .stderr(Stdio::null())
             .status();
 
+        // Не подмешивать bin/lib к системному x11vnc — несовместимые .so дают мгновенный exit.
+        // Не использовать -rfbaddr: в x11vnc 0.9.16 (libvnc) на части сборок это даёт
+        // «*** unrecognized option(s) *** -rfbaddr» и exit 1 — песочница не стартует.
+        // Без -localhost x11vnc слушает все интерфейсы (норм для Docker -p и для 127.0.0.1 на хосте).
+        // -noshm: при переполнении IPC /dev/shm x11vnc падает с «shmget: No space left on device»
+        // (это лимит shm, не диск). Polling через XGetImage без MIT-SHM медленнее, но стабильнее.
         let mut child = Command::new(&vnc_bin)
             .args([
                 "-display", &display,
                 "-rfbport", &port,
                 "-nopw", "-forever", "-shared",
                 "-noxdamage",
+                "-noshm",
             ])
-            .env("LD_LIBRARY_PATH", &ld)
+            .env_remove("LD_LIBRARY_PATH")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -208,14 +201,55 @@ impl ProcessSupervisor {
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if line.contains("error") || line.contains("Error") || line.contains("PORT") || line.contains("listen") {
-                        eprintln!("[vnc-{}] {}", id, line);
-                    }
+                    eprintln!("[vnc-{}] {}", id, line);
                 }
             });
         }
 
-        eprintln!("[sandbox-{}] x11vnc started on port {}", self.cfg.id, vnc_port);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(
+                format!(
+                    "x11vnc exited immediately (status={}); see [vnc-{}] stderr (display :{} port {})",
+                    status, self.cfg.id, self.cfg.display, vnc_port
+                )
+                .into(),
+            );
+        }
+
+        let addr = format!("127.0.0.1:{}", vnc_port);
+        let mut accepted = false;
+        for _ in 0..50 {
+            if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+                accepted = true;
+                break;
+            }
+            if let Ok(Some(st)) = child.try_wait() {
+                return Err(
+                    format!(
+                        "x11vnc died before listening (status={}); see [vnc-{}] stderr",
+                        st, self.cfg.id
+                    )
+                    .into(),
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !accepted {
+            let _ = child.kill().await;
+            return Err(
+                format!(
+                    "x11vnc did not accept TCP on {} within ~5s; see [vnc-{}] stderr",
+                    addr, self.cfg.id
+                )
+                .into(),
+            );
+        }
+
+        eprintln!(
+            "[sandbox-{}] x11vnc listening on {} (display :{})",
+            self.cfg.id, addr, self.cfg.display
+        );
         self.vnc = Some(child);
         Ok(())
     }
@@ -254,6 +288,15 @@ impl ProcessSupervisor {
         let steam_args = self.build_steam_args();
         let sandbox_home = &self.base.join("home");
 
+        let disp_for_kill = self.cfg.display;
+        tokio::task::spawn_blocking(move || {
+            // Сначала «чужой» CS2 на хосте (:0 и т.д.) без SFARM_DISPLAY — иначе Steam в VNC: «Only one instance…»
+            proc_kill::kill_host_linuxsteamrt_games_without_sfarm_display();
+            proc_kill::kill_stale_linuxsteamrt_games_on_display(disp_for_kill);
+        })
+        .await
+        .ok();
+
         let args_str = steam_args.iter()
             .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
             .collect::<Vec<_>>()
@@ -272,6 +315,10 @@ impl ProcessSupervisor {
             })
             .display()
             .to_string();
+
+        let compat_app_id = steam::game_app_id(&self.cfg.game);
+        let try_fuse_cs2_overlay = self.cfg.game == "cs2";
+        let common_folder = steam::steamapps_common_folder_name(&self.cfg.game).unwrap_or("");
 
         // Shell script that runs inside the snap container:
         // 1. Sets HOME to the sandbox directory (accessible via snap's shared data)
@@ -316,16 +363,31 @@ fi
 STEAM_REAL='{steam_real}'
 STEAM_LOCAL="$HOME/.local/share/Steam"
 
+# Отдельный TMP для каждой песочницы — иначе lock-файлы в общем /tmp дают «Only one instance…»
+mkdir -p "$HOME/.sfarm-tmp"
+export TMPDIR="$HOME/.sfarm-tmp"
+export TMP="$TMPDIR"
+export TEMP="$TMPDIR"
+export TEMPDIR="$TMPDIR"
+
+COMPAT_APP_ID='{compat_app_id}'
+COMMON_FOLDER='{common_folder}'
+TRY_FUSE_CS2_OVERLAY='{try_fuse_cs2_overlay}'
+
 mkdir -p "$STEAM_LOCAL"
 
 # Copy steam.sh so STEAMROOT resolves to shadow dir; symlink everything else
-# config and steamapps are special — handled separately below
+# config, steamapps, userdata, registry — отдельно (не делить с другой песочницей).
 for item in "$STEAM_REAL"/*; do
     name=$(basename "$item")
     [ "$name" = "ubuntu12_32" ] && continue
     [ "$name" = "ubuntu12_64" ] && continue
     [ "$name" = "config" ] && continue
     [ "$name" = "steamapps" ] && continue
+    [ "$name" = "userdata" ] && continue
+    [ "$name" = "registry.vdf" ] && continue
+    [ "$name" = "registry.vdf.bak" ] && continue
+    [ "$name" = "steam.pid" ] && continue
     if [ "$name" = "steam.sh" ]; then
         cp "$item" "$STEAM_LOCAL/$name"
         chmod +x "$STEAM_LOCAL/$name"
@@ -334,33 +396,99 @@ for item in "$STEAM_REAL"/*; do
     fi
 done
 
+# Состояние Steam на диске — своя копия на инстанс (симлинк на хост → «Only one instance of the game»).
+if [ -d "$STEAM_REAL/userdata" ]; then
+    cp -a "$STEAM_REAL/userdata" "$STEAM_LOCAL/userdata"
+fi
+for f in registry.vdf registry.vdf.bak; do
+    if [ -f "$STEAM_REAL/$f" ]; then cp -a "$STEAM_REAL/$f" "$STEAM_LOCAL/$f"; fi
+done
+rm -f "$STEAM_LOCAL/steam.pid" 2>/dev/null
+
 # Shadow steamapps: copy appmanifest files (own game state), symlink the rest.
-# This prevents "Only one instance of the game can be running" errors caused by
-# a shared appmanifest that still has StateFlags set to "running" from the host.
+# compatdata: общий симлинк на хост → два клиента делят prefix/locks → «Only one instance…».
+# Для известных игр (compat_app_id) копируем только каталог appid, остальное — симлинки.
 mkdir -p "$STEAM_LOCAL/steamapps"
 for item in "$STEAM_REAL/steamapps"/*; do
+    [ -e "$item" ] || continue
     name=$(basename "$item")
     case "$name" in
         appmanifest_*.acf|libraryfolders.vdf)
             cp "$item" "$STEAM_LOCAL/steamapps/$name" 2>/dev/null
+            ;;
+        compatdata)
+            if [ -n "$COMPAT_APP_ID" ] && [ "$COMPAT_APP_ID" != "0" ]; then
+                :
+            else
+                ln -sfn "$item" "$STEAM_LOCAL/steamapps/$name" 2>/dev/null
+            fi
+            ;;
+        common)
+            if [ -n "$COMMON_FOLDER" ] && [ -n "$COMPAT_APP_ID" ] && [ "$COMPAT_APP_ID" != "0" ]; then
+                mkdir -p "$STEAM_LOCAL/steamapps/common"
+                for sub in "$item"/*; do
+                    [ -e "$sub" ] || continue
+                    sname=$(basename "$sub")
+                    M="$STEAM_LOCAL/steamapps/common/$sname"
+                    if [ "$sname" = "$COMMON_FOLDER" ] && [ -d "$sub" ]; then
+                        if [ "$TRY_FUSE_CS2_OVERLAY" = "1" ] && command -v fuse-overlayfs >/dev/null 2>&1; then
+                            U="$HOME/.sfarm-cs2-overlay-upper"
+                            W="$HOME/.sfarm-cs2-overlay-work"
+                            mkdir -p "$U" "$W"
+                            rm -rf "$M" 2>/dev/null
+                            mkdir -p "$M"
+                            if fuse-overlayfs -o "lowerdir=$sub,upperdir=$U,workdir=$W" "$M" 2>/dev/null; then
+                                :
+                            else
+                                ln -sfn "$sub" "$M"
+                            fi
+                        else
+                            ln -sfn "$sub" "$M"
+                        fi
+                    else
+                        ln -sfn "$sub" "$M" 2>/dev/null
+                    fi
+                done
+            else
+                ln -sfn "$item" "$STEAM_LOCAL/steamapps/$name" 2>/dev/null
+            fi
             ;;
         *)
             ln -sfn "$item" "$STEAM_LOCAL/steamapps/$name" 2>/dev/null
             ;;
     esac
 done
+
+if [ -n "$COMPAT_APP_ID" ] && [ "$COMPAT_APP_ID" != "0" ] && [ -d "$STEAM_REAL/steamapps/compatdata" ]; then
+    rm -rf "$STEAM_LOCAL/steamapps/compatdata" 2>/dev/null
+    mkdir -p "$STEAM_LOCAL/steamapps/compatdata"
+    for citem in "$STEAM_REAL/steamapps/compatdata"/*; do
+        [ -e "$citem" ] || continue
+        cname=$(basename "$citem")
+        if [ "$cname" = "$COMPAT_APP_ID" ]; then
+            cp -a "$citem" "$STEAM_LOCAL/steamapps/compatdata/$cname"
+        else
+            ln -sfn "$citem" "$STEAM_LOCAL/steamapps/compatdata/$cname" 2>/dev/null
+        fi
+    done
+    if [ ! -e "$STEAM_LOCAL/steamapps/compatdata/$COMPAT_APP_ID" ]; then
+        mkdir -p "$STEAM_LOCAL/steamapps/compatdata/$COMPAT_APP_ID"
+    fi
+fi
+
 # Reset all game StateFlags to 4 ("fully installed, not running")
 for m in "$STEAM_LOCAL/steamapps"/appmanifest_*.acf; do
     [ -f "$m" ] && sed -i 's/"StateFlags"[[:space:]]*"[0-9]*"/"StateFlags"\t\t"4"/' "$m"
 done
 
-# Shadow config dir: own htmlcache (fresh, no stale SingletonLock), symlink the rest
-mkdir -p "$STEAM_LOCAL/config/htmlcache"
+# Shadow config: копии файлов (не симлинки) — иначе два клиента делят localconfig/SingletonLock.
+mkdir -p "$STEAM_LOCAL/config"
 for item in "$STEAM_REAL/config"/*; do
     name=$(basename "$item")
     [ "$name" = "htmlcache" ] && continue
-    ln -sfn "$item" "$STEAM_LOCAL/config/$name" 2>/dev/null
+    cp -a "$item" "$STEAM_LOCAL/config/$name" 2>/dev/null
 done
+mkdir -p "$STEAM_LOCAL/config/htmlcache"
 
 # Shadow ubuntu12_32 — COPY the steam binary so /proc/self/exe resolves here;
 # symlink everything else
@@ -420,23 +548,8 @@ printf '#!/bin/sh\nexit 0\n' > "$HOME/bin/zenity"
 chmod +x "$HOME/bin/zenity"
 export PATH="$HOME/bin:$PATH"
 
-# Kill stale game processes from a previous sandbox run.
-# IMPORTANT: exclude our own process tree to avoid self-kill
-# (pgrep -f matches the entire cmdline including this inner_script).
-MY_PID=$$
-MY_PPID=$(ps -o ppid= -p $MY_PID 2>/dev/null | tr -d ' ')
-MY_PPPID=$(ps -o ppid= -p $MY_PPID 2>/dev/null | tr -d ' ')
-for pid in $(pgrep -f 'linuxsteamrt64/cs2' 2>/dev/null); do
-    [ "$pid" = "$MY_PID" ] || [ "$pid" = "$MY_PPID" ] || [ "$pid" = "$MY_PPPID" ] || kill -9 "$pid" 2>/dev/null
-done
-for pid in $(pgrep -f 'linuxsteamrt64/dota2' 2>/dev/null); do
-    [ "$pid" = "$MY_PID" ] || [ "$pid" = "$MY_PPID" ] || [ "$pid" = "$MY_PPPID" ] || kill -9 "$pid" 2>/dev/null
-done
-rm -f /tmp/source_engine_*.lock 2>/dev/null
-rm -f /tmp/.com.valve.source* 2>/dev/null
-# Remove Source 2 engine lock files
-rm -f /tmp/source_engine_*.lock 2>/dev/null
-rm -f /tmp/.com.valve.source* 2>/dev/null
+# Зависшие cs2/dota2 на этом DISPLAY уже убраны супервизором (Rust), до snap — не через sh,
+# иначе snap часто выполняет -c через dash и ломается на local/read -d ''.
 
 "$STEAM_LOCAL/steam.sh" {args} &
 STEAM_PID=$!
@@ -453,6 +566,9 @@ while true; do sleep 60; done
             snap_home = sandbox_home.display(),
             snap_common = snap_common,
             steam_real = steam_real,
+            compat_app_id = compat_app_id,
+            common_folder = common_folder,
+            try_fuse_cs2_overlay = if try_fuse_cs2_overlay { "1" } else { "0" },
             args = args_str,
         );
 
@@ -491,6 +607,14 @@ while true; do sleep 60; done
     }
 
     async fn start_via_direct(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let disp_for_kill = self.cfg.display;
+        tokio::task::spawn_blocking(move || {
+            proc_kill::kill_host_linuxsteamrt_games_without_sfarm_display();
+            proc_kill::kill_stale_linuxsteamrt_games_on_display(disp_for_kill);
+        })
+        .await
+        .ok();
+
         let display = format!(":{}", self.cfg.display);
         let steam_args = self.build_steam_args();
         let sandbox_home = self.base.join("home");

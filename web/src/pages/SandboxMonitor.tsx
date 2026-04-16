@@ -359,44 +359,50 @@ export default function SandboxMonitor() {
           </table>
         </div>
 
-        {/* VNC Preview panel */}
+        {/* VNC Preview — все контейнеры сразу (не только выбранный порт в таблице) */}
         <div className="card">
           <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
             <Monitor className="w-4 h-4 text-accent" /> Game Preview
           </h3>
-          {selectedVNC ? (() => {
-            const selectedContainer = containers?.find(c => c.vnc_port === selectedVNC);
-            const displayStr = selectedContainer?.display ?? ':100';
-            return (
-            <div className="space-y-2">
-              <div className="bg-black rounded-lg border border-border-default aspect-[4/3] relative overflow-hidden">
-                <Suspense fallback={<VncChunkFallback className="absolute inset-0 rounded-lg" />}>
-                  <VncViewer
-                    key={selectedVNC}
-                    port={selectedVNC}
-                    viewOnly={true}
-                    className="w-full h-full relative"
-                  />
-                </Suspense>
-              </div>
-              <button
-                onClick={() => setFullscreenVNC({ port: selectedVNC, display: displayStr })}
-                className="w-full btn-primary text-sm py-2 flex items-center justify-center gap-2"
-              >
-                <Maximize2 className="w-4 h-4" />
-                Open Interactive VNC
-              </button>
-              <p className="text-xs text-text-muted text-center font-mono">
-                VNC :{selectedVNC} via WebSocket proxy
-              </p>
+          {containers && containers.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[70vh] overflow-y-auto pr-1">
+              {containers.map((c) => (
+                <div key={c.id} className="space-y-2">
+                  <div className="flex items-center justify-between gap-2 min-w-0">
+                    <span className="text-[11px] font-mono text-text-muted truncate" title={`${c.name} ${c.display}`}>
+                      {c.name} · {c.display}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setFullscreenVNC({ port: c.vnc_port, display: c.display })}
+                      className="btn-primary text-[11px] px-2 py-1 shrink-0 flex items-center gap-1"
+                    >
+                      <Maximize2 className="w-3 h-3" />
+                      Interactive
+                    </button>
+                  </div>
+                  <div className="bg-black rounded-lg border border-border-default aspect-[4/3] relative overflow-hidden">
+                    <Suspense fallback={<VncChunkFallback className="absolute inset-0 rounded-lg" />}>
+                      <VncViewer
+                        key={c.vnc_port}
+                        port={c.vnc_port}
+                        viewOnly={true}
+                        className="w-full h-full relative"
+                      />
+                    </Suspense>
+                  </div>
+                  <p className="text-[11px] text-text-muted text-center font-mono">
+                    VNC :{c.vnc_port}
+                  </p>
+                </div>
+              ))}
             </div>
-            );
-          })() : (
+          ) : (
             <div className="bg-bg-primary rounded-lg border border-border-default aspect-[4/3] flex items-center justify-center">
               <div className="text-center text-text-muted">
                 <Monitor className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                <p className="text-sm">Select a container to preview</p>
-                <p className="text-xs mt-1">Click VNC port in the table</p>
+                <p className="text-sm">No sandboxes to preview</p>
+                <p className="text-xs mt-1">Start a farm session with Sandbox mode</p>
               </div>
             </div>
           )}

@@ -10,6 +10,9 @@ pub enum IpcEvent {
     SteamReady,
     #[serde(rename = "game_running")]
     GameRunning { app_id: u32 },
+    /// Дочерний процесс игры (comm == "cs2"); для Go при hidepid/pgrep без root.
+    #[serde(rename = "cs2_pid")]
+    Cs2Pid { pid: u32 },
     #[serde(rename = "stats")]
     Stats { cpu: f64, memory_mb: u64 },
     #[serde(rename = "exited")]

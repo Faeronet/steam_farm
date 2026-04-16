@@ -22,7 +22,26 @@ func memMatchGateEnabled() bool {
 	return s != "0" && !strings.EqualFold(s, "off") && !strings.EqualFold(s, "false") && !strings.EqualFold(s, "no")
 }
 
-// gsiPawnControllable — персонаж в мире, можно двигаться: playing, hp>0, не freezetime (если раунд в GSI есть).
+// gsiActivityInWorld — не главное меню / ввод текста; «в мире» по activity=playing или по пустому
+// activity при загруженной карте (CS2 часто не шлёт строку "playing" на сервере).
+func gsiActivityInWorld(g *GSIState) bool {
+	if g == nil || g.Player == nil {
+		return false
+	}
+	act := strings.ToLower(strings.TrimSpace(g.Player.Activity))
+	if act == "menu" || act == "textinput" {
+		return false
+	}
+	if act == "playing" {
+		return true
+	}
+	if g.Map == nil || strings.TrimSpace(g.Map.Name) == "" {
+		return false
+	}
+	return act == ""
+}
+
+// gsiPawnControllable — персонаж в мире, можно двигаться: in-world activity, hp>0, не freezetime (если раунд в GSI есть).
 func gsiPawnControllable(g *GSIState) bool {
 	if g == nil || g.Map == nil || g.Map.Name == "" {
 		return false
@@ -30,7 +49,7 @@ func gsiPawnControllable(g *GSIState) bool {
 	if g.Player == nil || g.Player.State == nil {
 		return false
 	}
-	if strings.ToLower(strings.TrimSpace(g.Player.Activity)) != "playing" {
+	if !gsiActivityInWorld(g) {
 		return false
 	}
 	if g.Player.State.Health <= 0 {
@@ -56,7 +75,11 @@ func gsiMatchSessionAlive(g *GSIState) bool {
 	if act == "menu" || act == "textinput" {
 		return false
 	}
-	return act == "playing"
+	if act == "playing" {
+		return true
+	}
+	// Сессия матча на карте без явного "playing" (типично для CS2 онлайн).
+	return act == ""
 }
 
 type memCollectGateState struct {

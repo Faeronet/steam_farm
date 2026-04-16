@@ -617,17 +617,17 @@ func parseVec3FromGSI(s string) (x, y, z float64, ok bool) {
 // ─────────────────────── main loop ───────────────────────
 
 // cs2BotTickInterval drives the bot loop, memory poll, and YOLO/overlay cadence.
-// Default 64 Hz matches official CS2 match servers (see e.g. DMarket / Valve MM tick rate).
-// Community 128-tick: SFARM_CS2_BOT_TICK_HZ=128
+// По умолчанию: 64 Hz если SFARM_CS2_LOW_CPU=0; иначе 32 Hz (меньше нагрузка при нескольких аккаунтах). Явно: SFARM_CS2_BOT_TICK_HZ=48
 var cs2BotTickInterval = time.Second / 64
 
 func init() {
-	hz := 64
+	hz := defaultBotTickHz()
 	if s := strings.TrimSpace(os.Getenv("SFARM_CS2_BOT_TICK_HZ")); s != "" {
 		if v, err := strconv.Atoi(s); err == nil && v >= 10 && v <= 500 {
 			hz = v
 		} else {
-			log.Printf("[CS2Bot] SFARM_CS2_BOT_TICK_HZ=%q invalid (use 10..500), keeping 64", s)
+			log.Printf("[CS2Bot] SFARM_CS2_BOT_TICK_HZ=%q invalid (use 10..500), using default %d", s, defaultBotTickHz())
+			hz = defaultBotTickHz()
 		}
 	}
 	cs2BotTickInterval = time.Second / time.Duration(hz)
@@ -1018,7 +1018,16 @@ func (b *CS2Bot) waitForMatch(ctx context.Context) bool {
 			}
 
 			if time.Now().After(retryAt) {
-				log.Printf("[CS2Bot:%d] Retrying matchmaking queue...", b.display)
+				b.mu.Lock()
+				gLate := b.lastGSI
+				b.mu.Unlock()
+				if gLate != nil && gLate.Map != nil && strings.TrimSpace(gLate.Map.Name) != "" {
+					log.Printf("[CS2Bot:%d] GSI map=%q before queue retry — skipping Escape (avoid pause/loadout in match)",
+						b.display, strings.TrimSpace(gLate.Map.Name))
+					retryAt = time.Now().Add(90 * time.Second)
+					continue
+				}
+				log.Printf("[CS2Bot:%d] Retrying matchmaking queue (no map in GSI yet)...", b.display)
 				b.input.InvalidateWindowCache()
 				b.input.FocusGame()
 				sleepCtx(ctx, 500*time.Millisecond)
@@ -1235,7 +1244,7 @@ func gsiDroppedFromMatch(prev, cur *GSIState) bool {
 	if prev.Player == nil {
 		return false
 	}
-	if strings.ToLower(strings.TrimSpace(prev.Player.Activity)) != "playing" {
+	if !gsiActivityInWorld(prev) {
 		return false
 	}
 	if gsiAtMainMenuState(cur) {
@@ -1310,13 +1319,13 @@ func (b *CS2Bot) handleDisconnectRematch(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		dismissSteamLikeDialogs(b.display, &b.lastSteamDialogDismissAt, true)
+		_ = dismissSteamLikeDialogs(b.display, &b.lastSteamDialogDismissAt, true)
 		b.dismissPanoramaPopups(ctx)
 		if !sleepCtx(ctx, 400*time.Millisecond) {
 			return
 		}
 		b.ensureFocus(ctx)
-		dismissSteamLikeDialogs(b.display, &b.lastSteamDialogDismissAt, true)
+		_ = dismissSteamLikeDialogs(b.display, &b.lastSteamDialogDismissAt, true)
 		b.dismissPanoramaPopups(ctx)
 
 		b.joinMatchmaking(ctx)
@@ -1470,6 +1479,11 @@ func isCS2Running() bool {
 // isCS2RunningOnDisplay: при sandboxAccountID>0 — приоритет sfarm-{id} в environ/maps (и предки);
 // иначе DISPLAY/X11. display<0 — любой cs2 (legacy).
 func isCS2RunningOnDisplay(display int, sandboxAccountID int64) bool {
+	if sandboxAccountID > 0 {
+		if _, ok := sandboxReportedCS2PIDAlive(sandboxAccountID); ok {
+			return true
+		}
+	}
 	pids := cs2PIDsLinux()
 	if len(pids) == 0 {
 		return false
@@ -1500,22 +1514,52 @@ func isCS2RunningOnDisplay(display int, sandboxAccountID int64) bool {
 	return false
 }
 
+// procIsCS2FromPgrepF: только для pgrep -f — отбрасываем bash/sh/snap; pgrep -x cs2 не фильтруем (ниже).
+func procIsCS2FromPgrepF(pid int) bool {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
+	if err != nil {
+		return false
+	}
+	comm := strings.TrimSpace(string(data))
+	if comm == "bash" || comm == "sh" || comm == "dash" || comm == "snap" {
+		return false
+	}
+	if comm == "cs2" {
+		return true
+	}
+	exePath := filepath.Join("/proc", strconv.Itoa(pid), "exe")
+	exe, err := os.Readlink(exePath)
+	if err != nil {
+		// чужой uid: exe часто недоступен; не считаем кандидатом по -f (настоящий cs2 даёт pgrep -x cs2).
+		return false
+	}
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	return strings.Contains(exe, "linuxsteamrt64/cs2") || strings.HasSuffix(exe, "/cs2")
+}
+
 func cs2PIDsLinux() []string {
 	seen := make(map[string]struct{})
-	for _, pattern := range []struct {
-		x    string
-		full string
-	}{
-		{"-x", "cs2"},
-		{"-f", "linuxsteamrt64/cs2"},
-	} {
-		cmd := exec.Command("pgrep", pattern.x, pattern.full)
-		out, err := cmd.Output()
-		if err != nil {
-			continue
-		}
+	// Точное имя процесса — доверяем без /proc/PID/exe (у root/cs2 readlink с другого uid часто EPERM).
+	if out, err := exec.Command("pgrep", "-x", "cs2").Output(); err == nil {
 		for _, field := range strings.Fields(string(out)) {
 			if field != "" {
+				seen[field] = struct{}{}
+			}
+		}
+	}
+	if out, err := exec.Command("pgrep", "-f", "linuxsteamrt64/cs2").Output(); err == nil {
+		for _, field := range strings.Fields(string(out)) {
+			if field == "" {
+				continue
+			}
+			if _, ok := seen[field]; ok {
+				continue
+			}
+			p, err := strconv.Atoi(field)
+			if err != nil {
+				continue
+			}
+			if procIsCS2FromPgrepF(p) {
 				seen[field] = struct{}{}
 			}
 		}
@@ -1537,7 +1581,7 @@ func (b *CS2Bot) tick(ctx context.Context) {
 		return
 	}
 
-	if time.Since(b.lastFocus) > 5*time.Second {
+	if time.Since(b.lastFocus) > focusRefreshInterval() {
 		b.input.FocusGame()
 		b.lastFocus = time.Now()
 	}
@@ -1547,9 +1591,13 @@ func (b *CS2Bot) tick(ctx context.Context) {
 	phase := b.phase
 	b.mu.Unlock()
 
-	// Steam Remote Play / «Play away» notifications during launch (xdotool on Linux — см. steam_dialog_linux.go).
-	if !live || phase == PhaseWaitMapLoad {
-		maybeDismissSteamDialogs(b.display, &b.lastSteamDialogDismissAt)
+	// Steam Cloud / CS2 Disconnected — закрываем; при «Disconnected» — повторная очередь (steam_dialog_linux.go).
+	if maybeDismissSteamDialogs(b.input, b.display, &b.lastSteamDialogDismissAt) {
+		select {
+		case b.rematchCh <- struct{}{}:
+			log.Printf("[CS2Bot:%d] Connection/CS2 dialog dismissed — scheduling matchmaking re-queue", b.display)
+		default:
+		}
 	}
 
 	// Память: каждый тик бота — драйвер process_vm_readv + sigscan с первого же опроса (не ждём autoplay live).
@@ -1820,7 +1868,7 @@ func (b *CS2Bot) tickPatrol(elapsed time.Duration) {
 	dt := cs2BotTickInterval.Seconds()
 	phase := elapsed.Seconds()
 
-	const radarScanIntervalPatrol = 220 * time.Millisecond
+	radarScanIntervalPatrol := intervalRadarPatrol()
 	if b.lastRadarScan.IsZero() || time.Since(b.lastRadarScan) >= radarScanIntervalPatrol {
 		b.lastRadarScan = time.Now()
 		rx, ry, rw, rh := radarROIGame()
@@ -1849,10 +1897,6 @@ func (b *CS2Bot) tickPatrol(elapsed time.Duration) {
 	pitch := b.turn.pitchRate * math.Sin(phase*1.2)
 
 	b.smoothMouse(yaw*dt, pitch*dt)
-
-	if rand.Intn(8) == 0 {
-		b.input.MouseMove(rand.Intn(3)-1, rand.Intn(3)-1)
-	}
 }
 
 // ─────────────────────── ROAM (random walk, DM-safe heuristic) ───────────────────────
@@ -1921,7 +1965,7 @@ func (b *CS2Bot) tickRoam(_ time.Duration) {
 		b.navRouteStep = 0
 	}
 
-	const radarScanInterval = 175 * time.Millisecond
+	radarScanInterval := intervalRadarRoam()
 	if b.lastRadarScan.IsZero() || time.Since(b.lastRadarScan) >= radarScanInterval {
 		b.lastRadarScan = time.Now()
 		rx, ry, rw, rh := radarROIGame()
@@ -2025,7 +2069,7 @@ func (b *CS2Bot) tickRoam(_ time.Duration) {
 		}
 	}
 
-	const yawLerp = 0.12
+	const yawLerp = 0.09
 	b.navYawSmooth += (b.navYawTarget - b.navYawSmooth) * yawLerp
 	if !(graphSteer && memSteerOK) && math.Abs(b.navYawTarget-b.navYawSmooth) < 3 && rand.Float64() < 0.06 {
 		if !graphSteer {
@@ -2049,11 +2093,6 @@ func (b *CS2Bot) tickRoam(_ time.Duration) {
 	}
 	b.smoothMouse(b.navYawSmooth*dt, pitchWobble)
 
-	// Micro jitter so aim isn't a perfect arc
-	if rand.Intn(70) == 0 {
-		b.input.MouseMove(rand.Intn(5)-2, rand.Intn(3)-1)
-	}
-
 	// Short backward / clear corner (not blocking; tick-count based)
 	if b.roamBackTicks > 0 {
 		b.releaseKey(KeyW)
@@ -2067,7 +2106,7 @@ func (b *CS2Bot) tickRoam(_ time.Duration) {
 		}
 	}
 
-	// Короткие редкие стрейфы — длинные W+A/D вдоль стен дают «прилипание» боком.
+	// Стрейф: реже старты, дольше удержание A/D — плавнее, чем короткие рывки 70–190 ms.
 	if yawOnly {
 		b.releaseKey(KeyA)
 		b.releaseKey(KeyD)
@@ -2082,27 +2121,28 @@ func (b *CS2Bot) tickRoam(_ time.Duration) {
 	} else {
 		b.releaseKey(KeyA)
 		b.releaseKey(KeyD)
-		if rand.Intn(200) == 0 {
-			b.navStrafeEnd = now.Add(randDur(70, 190))
+		if rand.Intn(320) == 0 {
+			b.navStrafeEnd = now.Add(randDur(220, 520))
 			b.navStrafeLeft = rand.Intn(2) == 0
 		}
 	}
 
-	// “Unstick”: больший упор на yaw, короткий стрейф при смене направления
+	// “Unstick”: больший упор на yaw; стрейф-дополнения тоже длиннее для плавности
 	if now.After(b.navUnstickAt) {
 		b.navUnstickAt = now.Add(randDur(1400, 3200))
 		if graphSteer && memSteerOK {
 			// Не сбрасываем курс мышью наугад — память + граф уже задают heading.
 			if rand.Float64() < 0.28 {
 				b.navStrafeLeft = !b.navStrafeLeft
-				b.navStrafeEnd = now.Add(randDur(90, 220))
+				b.navStrafeEnd = now.Add(randDur(200, 520))
 			}
 		} else if rand.Float64() < 0.62 {
-			b.input.MouseMove(rand.Intn(220)-110, 10+rand.Intn(22))
+			b.turn.wm.Reset()
+			b.smoothMouse((rand.Float64()*2-1)*26, 5+rand.Float64()*10)
 			b.navYawTarget = (rand.Float64()*2 - 1) * (55 + rand.Float64()*95)
 			if rand.Float64() < 0.35 {
 				b.navStrafeLeft = !b.navStrafeLeft
-				b.navStrafeEnd = now.Add(randDur(90, 220))
+				b.navStrafeEnd = now.Add(randDur(200, 520))
 			}
 			if rand.Intn(3) == 0 {
 				b.roamBackTicks = 4 + rand.Intn(8)
@@ -2197,7 +2237,7 @@ func (b *CS2Bot) tickCombat(elapsed time.Duration) {
 
 	if b.yolo == nil {
 		// RGB: тёплые тона T-моделей (без YOLO).
-		const enemyGrabEvery = 95 * time.Millisecond
+		enemyGrabEvery := intervalCombatEnemyRGB()
 		if b.lastEnemyRGBGrab.IsZero() || time.Since(b.lastEnemyRGBGrab) >= enemyGrabEvery {
 			b.lastEnemyRGBGrab = time.Now()
 			ex, ey, ew, eh := enemyROIGame()
@@ -2212,7 +2252,7 @@ func (b *CS2Bot) tickCombat(elapsed time.Duration) {
 	}
 
 	// Движение в прицеле — слабее; при YOLO почти не трогаем мышь (наводка из tickYoloPipeline).
-	const visionInterval = 115 * time.Millisecond
+	visionInterval := intervalCombatVision()
 	visBlend := 0.12
 	waveGain := 1.0
 	if b.yolo != nil {
@@ -2363,7 +2403,7 @@ func (b *CS2Bot) tickYoloPipeline(ctx context.Context) {
 	b.yoloEmaYawDeg = YoloEmaBlend(b.yoloEmaYawDeg, yawDeg, aimAlpha)
 	b.yoloEmaPitchDeg = YoloEmaBlend(b.yoloEmaPitchDeg, pitchDeg, aimAlpha)
 
-	b.smoothMouse(b.yoloEmaYawDeg*0.38, b.yoloEmaPitchDeg*0.36)
+	b.smoothMouse(b.yoloEmaYawDeg*0.30, b.yoloEmaPitchDeg*0.28)
 
 	dt := cs2BotTickInterval.Seconds()
 	want := b.yoloSmErrPx < shootErrTol && best.Conf >= shootConfMin && b.yoloBurstCooldown <= 0
@@ -2376,7 +2416,7 @@ func (b *CS2Bot) tickYoloPipeline(ctx context.Context) {
 			b.shooting = true
 		}
 		b.yoloShotHold--
-		b.smoothMouse(0, -0.14*dt*50)
+		b.smoothMouse(0, -0.11*dt*50)
 		if b.yoloShotHold == 0 {
 			b.input.MouseUp(1)
 			b.shooting = false
@@ -2434,21 +2474,78 @@ func (b *CS2Bot) tickReposition(elapsed time.Duration) {
 
 // ─────────────────────── smooth mouse ───────────────────────
 
-func (b *CS2Bot) smoothMouse(dxDeg, dyDeg float64) {
-	const degToPixel = 3.0
-	// Небольшой разброс «скорости» по осям — независимый множитель в узком диапазоне.
-	sx := 0.88 + rand.Float64()*0.24
-	sy := 0.88 + rand.Float64()*0.24
-	b.turn.wm.AddTarget(dxDeg*degToPixel*sx, dyDeg*degToPixel*sy)
+// aimAngleJitter град: случайная погрешность к заданному повороту; на совсем малых Δ не добавляем (YOLO/микрокоррекция).
+func aimAngleJitter(dxDeg, dyDeg float64) (float64, float64) {
+	mag := math.Hypot(dxDeg, dyDeg)
+	if mag < 0.03 {
+		return dxDeg, dyDeg
+	}
+	terr := 0.11 + math.Min(mag*0.068, 2.75)
+	jYaw := (rand.Float64()*2 - 1) * terr
+	jPitch := (rand.Float64()*2 - 1) * terr * 0.76
+	return dxDeg + jYaw, dyDeg + jPitch
+}
 
-	// Несколько микрошагов WindMouse за тик (50 Hz), чтобы траектория изгибалась, а не ломалась.
-	const maxSteps = 7
+func (b *CS2Bot) smoothMouse(dxDeg, dyDeg float64) {
+	dxDeg, dyDeg = aimAngleJitter(dxDeg, dyDeg)
+
+	const degToPixel = 1.48
+	tx := dxDeg * degToPixel
+	ty := dyDeg * degToPixel
+	mag := math.Hypot(tx, ty)
+	if mag < 1e-8 {
+		b.turn.wm.RecenterPadIfSettled()
+		return
+	}
+
+	// Крупнее цель — разгон «с нуля» (ease-in); при LOW_CPU — меньше сегментов/шагов (экономия CPU).
+	const microPad = 1.65
+	low := cs2AutoplayLowCPU()
+	microSteps, innerMax := 30, 28
+	segLo, segSpan := 11, 13
+	if low {
+		microSteps, innerMax = 20, 18
+		segLo, segSpan = 8, 9
+	}
+	if mag < microPad {
+		b.turn.wm.AddTarget(tx, ty)
+		b.runWindMouseSteps(microSteps, 5, 0.11)
+		b.turn.wm.RecenterPadIfSettled()
+		return
+	}
+
+	seg := segLo + rand.Intn(segSpan)
+	pow := 1.14 + rand.Float64()*1.34
+	var prevEase float64
+
+	for s := 1; s <= seg; s++ {
+		t := float64(s) / float64(seg)
+		ease := math.Pow(t, pow)
+		f := ease - prevEase
+		prevEase = ease
+		b.turn.wm.AddTarget(tx*f, ty*f)
+		inner := 5 + (s*22)/seg + rand.Intn(4)
+		if inner > innerMax {
+			inner = innerMax
+		}
+		minK := 4
+		if s <= 2 {
+			minK = 6
+		}
+		b.runWindMouseSteps(inner, minK, 0.10)
+	}
+	b.turn.wm.RecenterPadIfSettled()
+}
+
+// runWindMouseSteps крутит WindMouse до достижения почти нуля дистанции или лимита шагов.
+func (b *CS2Bot) runWindMouseSteps(maxSteps, minBeforeEarly int, settleEps float64) {
 	for k := 0; k < maxSteps; k++ {
 		mdx, mdy := b.turn.wm.Step()
 		if mdx != 0 || mdy != 0 {
 			b.input.MouseMove(mdx, mdy)
 		}
-		if b.turn.wm.distToDest() < 0.22 && k > 0 {
+		d := b.turn.wm.distToDest()
+		if d < settleEps && k >= minBeforeEarly {
 			break
 		}
 	}
@@ -2506,7 +2603,7 @@ func (b *CS2Bot) releaseAll() {
 // ─────────────────────── focus / setup ───────────────────────
 
 func (b *CS2Bot) ensureFocus(ctx context.Context) {
-	maybeDismissSteamDialogs(b.display, &b.lastSteamDialogDismissAt)
+	_ = maybeDismissSteamDialogs(b.input, b.display, &b.lastSteamDialogDismissAt)
 	log.Printf("[CS2Bot:%d] Ensuring game focus...", b.display)
 
 	b.input.InvalidateWindowCache()

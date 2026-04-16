@@ -230,7 +230,16 @@ pub fn game_app_id(game: &str) -> u32 {
         "dota2" => 570,
         _ => 0,
     }
-}  
+}
+
+/// Точное имя каталога игры внутри `steamapps/common` (как в Steam).
+pub fn steamapps_common_folder_name(game: &str) -> Option<&'static str> {
+    match game {
+        "cs2" => Some("Counter-Strike Global Offensive"),
+        "dota2" => Some("dota 2 beta"),
+        _ => None,
+    }
+}
 
 pub fn default_launch_opts(game: &str) -> &'static str {
     match game {

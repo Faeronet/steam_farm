@@ -251,6 +251,7 @@ func (fc *FarmController) startFarm(w http.ResponseWriter, r *http.Request) {
 	dbCtx := r.Context()
 	botCtx := fc.appCtx
 	results := make([]map[string]interface{}, 0, len(req.AccountIDs))
+	sandboxesStarted := 0
 
 	for _, accID := range req.AccountIDs {
 		var a models.Account
@@ -303,6 +304,19 @@ func (fc *FarmController) startFarm(w http.ResponseWriter, r *http.Request) {
 			string(effectiveGame), accID)
 
 		if mode == "sandbox" && fc.sandboxes != nil {
+			// Launch() возвращает после X11+VNC, Steam ещё поднимается. Второй snap-Steam сразу
+			// может конфликтовать с первым (часто «пустой» :100/5900, живой :101/5901).
+			if sandboxesStarted > 0 {
+				if d := sandboxStaggerBetween(); d > 0 {
+					log.Printf("[Farm] Stagger %v before next sandbox (multi-account; SFARM_SANDBOX_STAGGER_SECS=0 отключает)", d)
+					select {
+					case <-time.After(d):
+					case <-botCtx.Done():
+						writeJSON(w, 499, map[string]string{"error": "cancelled during sandbox stagger"})
+						return
+					}
+				}
+			}
 			log.Printf("[Farm] Launching sandbox for %s (%s)", a.Username, effectiveGame)
 			info, err := fc.sandboxes.Launch(botCtx, a.ID, string(effectiveGame), a.Username, string(password))
 			if err != nil {
@@ -310,6 +324,7 @@ func (fc *FarmController) startFarm(w http.ResponseWriter, r *http.Request) {
 				results = append(results, map[string]interface{}{"account_id": accID, "error": err.Error()})
 				continue
 			}
+			sandboxesStarted++
 			fc.db.Pool.Exec(dbCtx,
 				`INSERT INTO sandboxes (account_id, container_id, container_name, game_type, machine_id, hostname, display, vnc_port, status)
 				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running')
@@ -784,4 +799,21 @@ func (fc *FarmController) Shutdown() {
 	if fc.autoplay != nil {
 		fc.autoplay.Shutdown()
 	}
+}
+
+// sandboxStaggerBetween — пауза перед вторым и следующими сэндбоксами в одном Start.
+// Пока sfarm-sandbox не ждёт полного старта Steam, параллельный snap steam ломает первый дисплей.
+func sandboxStaggerBetween() time.Duration {
+	s := strings.TrimSpace(os.Getenv("SFARM_SANDBOX_STAGGER_SECS"))
+	if s == "0" || s == "off" || s == "false" {
+		return 0
+	}
+	if s == "" {
+		return 12 * time.Second
+	}
+	sec, err := strconv.Atoi(s)
+	if err != nil || sec < 0 {
+		return 12 * time.Second
+	}
+	return time.Duration(sec) * time.Second
 }

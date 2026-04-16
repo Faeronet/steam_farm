@@ -688,14 +688,70 @@ func tryStartLinuxMemDriver(display int, off cs2MemoryJSON, sourceLabel string, 
 	return m
 }
 
-func cs2PIDForDisplay(display int) (int, bool) {
-	if s := os.Getenv(envCS2PID); s != "" {
-		p, err := strconv.Atoi(strings.TrimSpace(s))
-		if err == nil && p > 0 {
-			return p, true
+func readProcPPid(pid int) int {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
+	if err != nil {
+		return -1
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "PPid:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				p, err := strconv.Atoi(fields[1])
+				if err == nil {
+					return p
+				}
+			}
+			break
 		}
 	}
+	return -1
+}
+
+func environHasDisplay(pid int, display int) bool {
+	want := []byte(fmt.Sprintf("DISPLAY=:%d", display))
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "environ"))
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(data, want)
+}
+
+// pidAssociatesWithDisplay: у cs2 часто нет DISPLAY в /proc/pid/environ — проверяем цепочку предков (Steam с тем же :N).
+func pidAssociatesWithDisplay(pid int, display int) bool {
+	if display < 0 {
+		return true
+	}
+	if environHasDisplay(pid, display) {
+		return true
+	}
+	seen := make(map[int]bool)
+	p := readProcPPid(pid)
+	for step := 0; step < 64 && p > 1; step++ {
+		if seen[p] {
+			break
+		}
+		seen[p] = true
+		if environHasDisplay(p, display) {
+			return true
+		}
+		p = readProcPPid(p)
+	}
+	return false
+}
+
+func cs2PIDForDisplay(display int) (int, bool) {
 	pids := cs2PIDsLinux()
+	if len(pids) > 1 && strings.TrimSpace(os.Getenv(envCS2PID)) != "" {
+		log.Printf("[CS2Mem] %s игнорируется при нескольких процессах cs2 — привязка по DISPLAY/предкам", envCS2PID)
+	} else if len(pids) <= 1 {
+		if s := os.Getenv(envCS2PID); s != "" {
+			p, err := strconv.Atoi(strings.TrimSpace(s))
+			if err == nil && p > 0 {
+				return p, true
+			}
+		}
+	}
 	if len(pids) == 0 {
 		return 0, false
 	}
@@ -703,25 +759,23 @@ func cs2PIDForDisplay(display int) (int, bool) {
 		p, err := strconv.Atoi(pids[0])
 		return p, err == nil && p > 0
 	}
-	want := []byte(fmt.Sprintf("DISPLAY=:%d", display))
 	for _, pidStr := range pids {
-		data, err := os.ReadFile(filepath.Join("/proc", pidStr, "environ"))
-		if err != nil {
+		p, err := strconv.Atoi(pidStr)
+		if err != nil || p <= 0 {
 			continue
 		}
-		if bytes.Contains(data, want) {
-			p, err := strconv.Atoi(pidStr)
-			return p, err == nil && p > 0
+		if pidAssociatesWithDisplay(p, display) {
+			return p, true
 		}
 	}
 	if len(pids) == 1 {
 		p, err := strconv.Atoi(pids[0])
 		if err == nil && p > 0 {
-			log.Printf("[CS2Mem] DISPLAY=:%d not found on cs2 environ; using single pid %d (set SFARM_CS2_PID if wrong)", display, p)
+			log.Printf("[CS2Mem] DISPLAY=:%d не найден в цепочке процессов; используем единственный pid %d", display, p)
 			return p, true
 		}
 	}
-	log.Printf("[CS2Mem] no cs2 with DISPLAY=:%d in /proc/*/environ (candidates: %v)", display, pids)
+	log.Printf("[CS2Mem] no cs2 for DISPLAY=:%d among candidates %v", display, pids)
 	return 0, false
 }
 
@@ -746,6 +800,9 @@ func moduleImageBase(pid int, off cs2MemoryJSON) (base uint64, path string, err 
 			continue
 		}
 		if strings.HasPrefix(mpath, "[") {
+			continue
+		}
+		if strings.Contains(strings.ToLower(mpath), "steamclient") {
 			continue
 		}
 		if !strings.Contains(mpath, sub) {

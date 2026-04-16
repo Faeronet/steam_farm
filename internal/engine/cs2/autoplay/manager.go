@@ -125,6 +125,7 @@ func (m *Manager) StartBot(accountID int64, display int, steamID string) error {
 		log.Printf("[Autoplay] display=:%d: YOLO TCP worker не подключён — детекты/красные рамки на игре не появятся (проверьте [Autoplay] YOLO worker и tools/cs2-yolo)", display)
 	}
 	bot, err := NewCS2Bot(BotConfig{
+		AccountID:      accountID,
 		Display:        display,
 		SteamID:        steamID,
 		GSI:            m.gsi,

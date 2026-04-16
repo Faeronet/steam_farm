@@ -235,7 +235,7 @@ pub fn game_app_id(game: &str) -> u32 {
 pub fn default_launch_opts(game: &str) -> &'static str {
     match game {
         "cs2" => concat!(
-            "-novid -nojoy -low -console -w 1280 -h 720 +fps_max 30 ",
+            "-novid -nojoy -low -vrdisable -console -w 1280 -h 720 +fps_max 30 ",
             "+cl_disablehtmlmotd 1 -nosound -nopreload +r_dynamic 0 +mat_queue_mode 0 ",
             "+con_enable 1 -condebug +r_player_visibility_mode 1 ",
             "+cl_radar_scale 0.30 +cl_radar_rotate 0 +cl_radar_always_centered 0 +cl_hud_radar_scale 1.15 ",

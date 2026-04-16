@@ -42,18 +42,23 @@ type GSIState struct {
 	} `json:"round"`
 }
 
+type gsiAccountHandler struct {
+	steamID string
+	fn      func(*GSIState)
+}
+
 type GSIServer struct {
-	server   *http.Server
-	mu       sync.RWMutex
-	latest   map[string]*GSIState       // steamid -> latest state
-	handlers map[string]func(*GSIState) // steamid -> callback
-	catchAll []func(*GSIState)          // handlers registered with empty steamID
+	server *http.Server
+	mu     sync.RWMutex
+	latest map[string]*GSIState // steamid -> latest state (last POST)
+	// byAccount: один обработчик на аккаунт; маршрутизация по provider.steamid (не перезаписываем второй слот).
+	byAccount map[int64]*gsiAccountHandler
 }
 
 func NewGSIServer() *GSIServer {
 	gs := &GSIServer{
-		latest:   make(map[string]*GSIState),
-		handlers: make(map[string]func(*GSIState)),
+		latest:    make(map[string]*GSIState),
+		byAccount: make(map[int64]*gsiAccountHandler),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", gs.handlePost)
@@ -77,25 +82,29 @@ func (gs *GSIServer) Stop() {
 	gs.server.Close()
 }
 
-func (gs *GSIServer) RegisterHandler(steamID string, fn func(*GSIState)) {
+// RegisterAccountHandler привязывает GSI к account_id. Нужен непустой steamID (как в gamestate provider),
+// иначе POST не маршрутизируется (заполните steam_id у аккаунта в БД / UI).
+func (gs *GSIServer) RegisterAccountHandler(accountID int64, steamID string, fn func(*GSIState)) {
 	gs.mu.Lock()
+	defer gs.mu.Unlock()
 	if steamID == "" {
-		gs.catchAll = append(gs.catchAll, fn)
-	} else {
-		gs.handlers[steamID] = fn
+		log.Printf("[GSI] account %d: steam_id пуст — GSI не будет доставляться этому боту; укажите steam_id аккаунта", accountID)
 	}
-	gs.mu.Unlock()
+	if steamID != "" {
+		for id, prev := range gs.byAccount {
+			if id != accountID && prev != nil && prev.steamID == steamID {
+				log.Printf("[GSI] warning: steam_id %s уже зарегистрирован для account %d; дубли GSI для двух песочниц с одним логином неразличимы", steamID, id)
+				break
+			}
+		}
+	}
+	gs.byAccount[accountID] = &gsiAccountHandler{steamID: steamID, fn: fn}
 }
 
-func (gs *GSIServer) UnregisterHandler(steamID string) {
+func (gs *GSIServer) UnregisterAccountHandler(accountID int64) {
 	gs.mu.Lock()
-	if steamID == "" {
-		gs.catchAll = nil
-	} else {
-		delete(gs.handlers, steamID)
-		delete(gs.latest, steamID)
-	}
-	gs.mu.Unlock()
+	defer gs.mu.Unlock()
+	delete(gs.byAccount, accountID)
 }
 
 func (gs *GSIServer) GetState(steamID string) *GSIState {
@@ -130,16 +139,17 @@ func (gs *GSIServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	if steamID != "" {
 		gs.latest[steamID] = &state
 	}
-	handler := gs.handlers[steamID]
-	catchAll := make([]func(*GSIState), len(gs.catchAll))
-	copy(catchAll, gs.catchAll)
+	handlers := make(map[int64]*gsiAccountHandler, len(gs.byAccount))
+	for id, h := range gs.byAccount {
+		handlers[id] = h
+	}
 	gs.mu.Unlock()
 
-	if handler != nil {
-		handler(&state)
-	}
-	for _, fn := range catchAll {
-		fn(&state)
+	for _, reg := range handlers {
+		if reg == nil || reg.fn == nil || reg.steamID == "" || reg.steamID != steamID {
+			continue
+		}
+		reg.fn(&state)
 	}
 	w.WriteHeader(200)
 }

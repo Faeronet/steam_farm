@@ -2,7 +2,6 @@ package autoplay
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -56,7 +55,7 @@ type behaviorKind int
 
 const (
 	bhvPatrol behaviorKind = iota
-	bhvRoam // random map walk: WASD + smooth yaw (no pure W sprint)
+	bhvRoam                // random map walk: WASD + smooth yaw (no pure W sprint)
 	bhvCornerCheck
 	bhvSprint
 	bhvCombat
@@ -70,10 +69,11 @@ type turnState struct {
 }
 
 type CS2Bot struct {
-	display int
-	steamID string
-	input   *InputSender
-	gsi     *GSIServer
+	accountID int64 // farm account — маршрутизация GSI по steam_id без перезаписи второго слота
+	display   int
+	steamID   string
+	input     *InputSender
+	gsi       *GSIServer
 
 	mu        sync.Mutex
 	phase     BotPhase
@@ -95,9 +95,12 @@ type CS2Bot struct {
 	burstTicks int
 	burstCool  int
 
-	lastFocus       time.Time
-	tickCount       uint64
-	consoleLogStart int64 // file offset at bot start — only parse new lines
+	lastFocus                time.Time
+	lastSteamDialogDismissAt time.Time
+	lastRematchSignalAt      time.Time
+	rematchCh                chan struct{} // GSI: выход в главное меню с карты → повторная очередь
+	tickCount                uint64
+	consoleLogStart          int64 // file offset at bot start — only parse new lines
 
 	// autoplayLive: true только после 5b + фокуса — до этого крутим YOLO (зрение), но не движение/GSI-поведение (клики матчмейкинга).
 	autoplayLive bool
@@ -124,11 +127,11 @@ type CS2Bot struct {
 
 	// GSI world position (player_position) — used for forward + no-motion unstuck.
 	gsiMapX, gsiMapY, gsiMapZ float64
-	gsiPosOK                 bool
-	gsiFrozenSince           time.Time
-	lastUnstickAt            time.Time
+	gsiPosOK                  bool
+	gsiFrozenSince            time.Time
+	lastUnstickAt             time.Time
 	// Vertical velocity from GSI Y (stairs / ramps) — tilts view slightly up/down vs horizon.
-	gsiSampleTime time.Time
+	gsiSampleTime  time.Time
 	gsiLastSampleY float64
 	gsiVertVel     float64
 	// Сглаженное отклонение «вверх/вниз» от горизонта (после спавна ~0); тянем к ~0 с разбросом, без ухода в небо.
@@ -141,81 +144,82 @@ type CS2Bot struct {
 	forwardSegSince time.Time
 
 	// Миникарта со смещением (cl_radar_always_centered  «панорамирует»): резкий скачок XZ = телепорт/респавен.
-	radarJumpDX, radarJumpDZ        float64
-	radarJumpAt                     time.Time
+	radarJumpDX, radarJumpDZ       float64
+	radarJumpAt                    time.Time
 	radarPanAccumX, radarPanAccumZ float64
 
 	// Vision: center ROI motion centroid (~8–10 Hz), XGetImage in input worker (no Python).
-	vision          visionMotion
-	lastVisionGrab  time.Time
-	combatWaveSeed  float64
+	vision         visionMotion
+	lastVisionGrab time.Time
+	combatWaveSeed float64
 
 	// Minimap (grayscale): white-arrow bearing + dark wall samples — no reliance on local player dot hue.
-	radarNav           radarMinimapNav
-	lastRadarScan      time.Time
-	radarStuckSamples  int
-	lastEnemyRGBGrab   time.Time // эвристика RGB (только без YOLO)
+	radarNav          radarMinimapNav
+	lastRadarScan     time.Time
+	radarStuckSamples int
+	lastEnemyRGBGrab  time.Time // эвристика RGB (только без YOLO)
 
 	// YOLO (deathmatch): детект + наводка + стрельба; движение — поведения GSI/роум.
-	yolo               *YoloClient
-	yoloInferTrace     func(display int, w, h, ndets int, err error)
-	yoloPreview        *YoloPreviewSink
+	yolo           *YoloClient
+	yoloInferTrace func(display int, w, h, ndets int, err error)
+	yoloPreview    *YoloPreviewSink
 	// Поверх CS2 на том же X11 (VNC); Linux, по умолчанию вкл. — см. overlay_linux.go.
-	enemyOverlay EnemyOverlay
-	yoloEmaYawDeg      float64
-	yoloEmaPitchDeg    float64
+	enemyOverlay      EnemyOverlay
+	yoloEmaYawDeg     float64
+	yoloEmaPitchDeg   float64
 	yoloSmErrPx       float64 // сглаженная ошибка прицела (px), порог для выстрела
-	yoloShotHold       int
-	yoloBurstCooldown  int
+	yoloShotHold      int
+	yoloBurstCooldown int
 
 	// Mid-match map rotation (DM): last map we adapted to; when GSI name changes, wait for pawn again.
-	sessionMapName   string
-	mapReloadSince   time.Time
+	sessionMapName string
+	mapReloadSince time.Time
 
 	// Optional: SFARM_CS2_MEM_CONFIG — world pose / velocity from process memory (Linux).
-	memDriver            cs2MemDriver
-	memReaderNextTry     time.Time
-	memNavActive         bool
-	memAt                time.Time
-	memYawRad            float64
-	memSpeed2            float64
-	navDesiredBear       float64
+	memDriver             cs2MemDriver
+	memReaderNextTry      time.Time
+	memNavActive          bool
+	memAt                 time.Time
+	memYawRad             float64
+	memSpeed2             float64
+	navDesiredBear        float64
 	memStuckLowSpeedSince time.Time
-	lastMemBumpJumpAt    time.Time
-	memAnglesOK          bool // eye angles read from memory (for yaw blend)
-	memLastVerboseLog    time.Time
-	memLastOKLog         time.Time // дроссель логов «read OK» при успешном snapshot
-	lastMemGSIDriftLog   time.Time
-	memNavHintLogged     bool // logged once: no mem config → GSI+radar only
+	lastMemBumpJumpAt     time.Time
+	memAnglesOK           bool // eye angles read from memory (for yaw blend)
+	memLastVerboseLog     time.Time
+	memLastOKLog          time.Time // дроссель логов «read OK» при успешном snapshot
+	lastMemGSIDriftLog    time.Time
+	memNavHintLogged      bool // logged once: no mem config → GSI+radar only
 	// Дроссель лога read error на боте: memDriver пересоздаётся после ошибки, иначе lastErr* в драйвере обнуляются каждый тик.
 	memReadErrLastLog time.Time
 	memReadErrMsg     string
 	// Подряд неудачных snapshot() подряд — только после порога сбрасываем memDriver (иначе ESP теряет драйвер каждый тик).
 	memSnapshotFailStreak int
 	// Последний опрос snapshot() в pollCS2MemImpl (для WebSocket cs2:mem).
-	lastMemPollAt    time.Time
-	lastMemPollOK    bool
-	lastMemPollErr   string
-	lastEspBoxCount  int
-	memTelemetry     func(display int, ev map[string]interface{})
+	lastMemPollAt   time.Time
+	lastMemPollOK   bool
+	lastMemPollErr  string
+	lastEspBoxCount int
+	memTelemetry    func(display int, ev map[string]interface{})
 
 	// Телеметрия навигации (JSONL): см. navlog.go; по умолчанию файл в os.TempDir().
-	navLogF            *os.File
-	navLogPathOpen     string
-	navLogLastEmit     time.Time
-	teleGraphSteer     bool
-	teleRadarWall      float64
-	teleRadarYawSug    float64
-	teleRadarOK        bool
-	teleRadarAt        time.Time
-	teleRadarRw        int
-	teleRadarRh        int
+	navLogF         *os.File
+	navLogPathOpen  string
+	navLogLastEmit  time.Time
+	teleGraphSteer  bool
+	teleRadarWall   float64
+	teleRadarYawSug float64
+	teleRadarOK     bool
+	teleRadarAt     time.Time
+	teleRadarRw     int
+	teleRadarRh     int
 }
 
 type BotConfig struct {
-	Display int
-	SteamID string
-	GSI     *GSIServer
+	AccountID int64
+	Display   int
+	SteamID   string
+	GSI       *GSIServer
 	Yolo    *YoloClient // общий worker Manager; nil — эвристики боя без сети
 	// YoloInferTrace логирует живой X11-кадр → worker (например в UI yolo:log).
 	YoloInferTrace func(display int, w, h, ndets int, err error)
@@ -244,6 +248,7 @@ func NewCS2Bot(cfg BotConfig) (*CS2Bot, error) {
 		return nil, err
 	}
 	return &CS2Bot{
+		accountID:      cfg.AccountID,
 		display:        cfg.Display,
 		steamID:        cfg.SteamID,
 		input:          input,
@@ -256,13 +261,14 @@ func NewCS2Bot(cfg BotConfig) (*CS2Bot, error) {
 		phase:          PhaseWaitProcess,
 		heldKeys:       make(map[uint]bool),
 		yoloSmErrPx:    4000,
+		rematchCh:      make(chan struct{}, 1),
 	}, nil
 }
 
 func (b *CS2Bot) Start(ctx context.Context) {
 	ctx, b.cancel = context.WithCancel(ctx)
 	if b.gsi != nil {
-		b.gsi.RegisterHandler(b.steamID, b.onGSIUpdate)
+		b.gsi.RegisterAccountHandler(b.accountID, b.steamID, b.onGSIUpdate)
 	}
 	b.mu.Lock()
 	b.running = true
@@ -279,7 +285,7 @@ func (b *CS2Bot) Start(ctx context.Context) {
 		defer b.runWg.Done()
 		b.run(ctx)
 	}()
-	log.Printf("[CS2Bot] Started for display :%d (steamID=%s) [v2-smart-detect]", b.display, b.steamID)
+	log.Printf("[CS2Bot] Started account=%d display :%d (steamID=%s) [v2-smart-detect]", b.accountID, b.display, b.steamID)
 }
 
 func (b *CS2Bot) Stop() {
@@ -297,7 +303,7 @@ func (b *CS2Bot) Stop() {
 		b.enemyOverlay = nil
 	}
 	if b.gsi != nil {
-		b.gsi.UnregisterHandler(b.steamID)
+		b.gsi.UnregisterAccountHandler(b.accountID)
 	}
 	memCollectResetDisplay(b.display)
 	b.releaseAll()
@@ -359,9 +365,12 @@ func bhvName(k behaviorKind) string {
 func (b *CS2Bot) onGSIUpdate(state *GSIState) {
 	defer memCollectUpdateFromGSI(b.display, state)
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	prev := b.lastGSI
 	b.lastGSI = state
+	defer func() {
+		b.maybeScheduleRematchLocked(prev, state)
+		b.mu.Unlock()
+	}()
 
 	if prev == nil {
 		mapName := ""
@@ -378,32 +387,32 @@ func (b *CS2Bot) onGSIUpdate(state *GSIState) {
 
 	if state.Player == nil || state.Player.State == nil {
 		b.maybeDetectMidMatchMapChangeLocked(prev, state)
-		return
-	}
-	wasAlive := prev != nil && prev.Player != nil && prev.Player.State != nil && prev.Player.State.Health > 0
-	nowAlive := state.Player.State.Health > 0
-
-	if wasAlive && !nowAlive {
-		b.deaths++
-		b.phase = PhaseDead
-		b.gsiFrozenSince = time.Time{}
-		b.stuckEscalation = 0
-	} else if nowAlive {
-		if !wasAlive {
-			b.needsNavReset = true
-			// Респавн / первый выход в бой: сдвиг радара по экрану, сглаживание и интервал скана обнуляем.
-			b.resetRadarScanStateLocked()
-		}
-		if state.Round != nil && state.Round.Phase == "freezetime" {
-			b.phase = PhaseFreezeTime
-		} else {
-			b.phase = PhaseAlive
-		}
 	} else {
-		b.phase = PhaseDead
-	}
+		wasAlive := prev != nil && prev.Player != nil && prev.Player.State != nil && prev.Player.State.Health > 0
+		nowAlive := state.Player.State.Health > 0
 
-	b.maybeDetectMidMatchMapChangeLocked(prev, state)
+		if wasAlive && !nowAlive {
+			b.deaths++
+			b.phase = PhaseDead
+			b.gsiFrozenSince = time.Time{}
+			b.stuckEscalation = 0
+		} else if nowAlive {
+			if !wasAlive {
+				b.needsNavReset = true
+				// Респавн / первый выход в бой: сдвиг радара по экрану, сглаживание и интервал скана обнуляем.
+				b.resetRadarScanStateLocked()
+			}
+			if state.Round != nil && state.Round.Phase == "freezetime" {
+				b.phase = PhaseFreezeTime
+			} else {
+				b.phase = PhaseAlive
+			}
+		} else {
+			b.phase = PhaseDead
+		}
+
+		b.maybeDetectMidMatchMapChangeLocked(prev, state)
+	}
 }
 
 // maybeDetectMidMatchMapChangeLocked: GSI map name changed while in session → reload phase (caller holds b.mu).
@@ -636,11 +645,13 @@ const memNavFreshAge = 110 * time.Millisecond
 
 // sq(float64) — compare movement on XZ between GSI samples (~0.5s); below this = “not moving”.
 const gsiStuckMoveSq = 20.0 * 20.0
+
 // Резкий перенос по карте за один тик GSI — новый «якорь» миникарты (респавен / телепорт).
 const gsiMinimapJumpSq = 280.0 * 280.0
 
 const gsiStuckHoldAfter = 700 * time.Millisecond
 const unstuckCooldown = 320 * time.Millisecond
+
 // If GSI never sends player_position, wall contact still stops movement — unstick on long W holds.
 const forwardStuckNoGSIPos = 2300 * time.Millisecond
 const forwardStuckLongPush = 3800 * time.Millisecond // backup when GSI reports tiny drift but view is on a wall
@@ -716,8 +727,15 @@ func (b *CS2Bot) run(ctx context.Context) {
 	log.Printf("[CS2Bot:%d] All systems go — starting autoplay (session map=%q)", b.display, b.sessionMapName)
 	b.pickBehavior()
 
-	<-ctx.Done()
-	b.releaseAll()
+	for {
+		select {
+		case <-ctx.Done():
+			b.releaseAll()
+			return
+		case <-b.rematchCh:
+			b.handleDisconnectRematch(ctx)
+		}
+	}
 }
 
 // ─────────────────── smart game detection ────────────────────
@@ -1120,15 +1138,15 @@ func (b *CS2Bot) maybeUnstickForward() {
 	b.mu.Unlock()
 }
 
-// doUnstickMotion backs off, strafes, snaps yaw, looks up from the floor, jumps — strength rises with stuckEscalation.
+// doUnstickMotion: стрейф + рывок yaw, затем вперёд + прыжок (без S — назад+прыжок плохо обходят угол).
 func (b *CS2Bot) doUnstickMotion(esc int) {
 	b.releaseKey(KeyW)
+	b.releaseKey(KeyS)
 
 	var side uint = KeyA
 	if rand.Intn(2) == 0 {
 		side = KeyD
 	}
-	b.input.KeyDown(KeyS)
 	b.input.KeyDown(side)
 
 	yaw := 380 + rand.Intn(420)
@@ -1148,12 +1166,14 @@ func (b *CS2Bot) doUnstickMotion(esc int) {
 	b.input.KeyUp(side)
 	b.input.MouseMove(rand.Intn(260)-130, 14+rand.Intn(24))
 	time.Sleep(90 * time.Millisecond)
-	b.input.KeyUp(KeyS)
 
+	b.input.KeyDown(KeyW)
+	time.Sleep(40 * time.Millisecond)
 	for i := 0; i < 2; i++ {
 		b.input.KeyTap(KeySpace)
 		time.Sleep(75 * time.Millisecond)
 	}
+	b.input.KeyUp(KeyW)
 }
 
 // clickPlayTabMulti opens the Play panel with a short sweep — wide multi-click was jostling adjacent Panorama.
@@ -1188,17 +1208,149 @@ func (b *CS2Bot) hasGSIMap() bool {
 func (b *CS2Bot) gsiAtMainMenu() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	g := b.lastGSI
+	return gsiAtMainMenuState(b.lastGSI)
+}
+
+func gsiAtMainMenuState(g *GSIState) bool {
 	if g == nil || g.Player == nil {
 		return false
 	}
 	if strings.ToLower(strings.TrimSpace(g.Player.Activity)) != "menu" {
 		return false
 	}
-	if g.Map != nil && g.Map.Name != "" {
+	if g.Map != nil && strings.TrimSpace(g.Map.Name) != "" {
 		return false
 	}
 	return true
+}
+
+// gsiDroppedFromMatch: был playable сессия на карте, новый снимок — выход в главное меню / обрыв.
+func gsiDroppedFromMatch(prev, cur *GSIState) bool {
+	if prev == nil || cur == nil {
+		return false
+	}
+	if gsiMapName(prev) == "" {
+		return false
+	}
+	if prev.Player == nil {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(prev.Player.Activity)) != "playing" {
+		return false
+	}
+	if gsiAtMainMenuState(cur) {
+		return true
+	}
+	if cur.Player == nil {
+		return gsiMapName(cur) == ""
+	}
+	if cur.Player.State == nil {
+		return gsiMapName(cur) == ""
+	}
+	return false
+}
+
+func cs2AutoRematchEnabled() bool {
+	return strings.TrimSpace(os.Getenv("SFARM_CS2_AUTO_REMATCH")) != "0"
+}
+
+func (b *CS2Bot) maybeScheduleRematchLocked(prev, cur *GSIState) {
+	if !cs2AutoRematchEnabled() {
+		return
+	}
+	if !b.autoplayLive || b.sessionMapName == "" {
+		return
+	}
+	if !gsiDroppedFromMatch(prev, cur) {
+		return
+	}
+	if time.Since(b.lastRematchSignalAt) < 20*time.Second {
+		return
+	}
+	select {
+	case b.rematchCh <- struct{}{}:
+		b.lastRematchSignalAt = time.Now()
+		log.Printf("[CS2Bot:%d] Session ended (GSI) — scheduling re-queue", b.display)
+	default:
+	}
+}
+
+func (b *CS2Bot) dismissPanoramaPopups(ctx context.Context) {
+	for range 5 {
+		b.input.InvalidateWindowCache()
+		b.input.FocusGame()
+		if !sleepCtx(ctx, 160*time.Millisecond) {
+			return
+		}
+		b.input.KeyTap(KeyReturn)
+		if !sleepCtx(ctx, 140*time.Millisecond) {
+			return
+		}
+	}
+}
+
+// handleDisconnectRematch closes blocking Steam/CS2 UI, then repeats join → wait match → wait pawn.
+func (b *CS2Bot) handleDisconnectRematch(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	log.Printf("[CS2Bot:%d] Re-queue after disconnect/kick...", b.display)
+
+	b.mu.Lock()
+	b.autoplayLive = false
+	b.phase = PhaseWaitMatch
+	b.sessionMapName = ""
+	b.mapReloadSince = time.Time{}
+	b.mu.Unlock()
+
+	memCollectResetDisplay(b.display)
+
+	matchOK := false
+	for attempt := 1; attempt <= 3; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
+		dismissSteamLikeDialogs(b.display, &b.lastSteamDialogDismissAt, true)
+		b.dismissPanoramaPopups(ctx)
+		if !sleepCtx(ctx, 400*time.Millisecond) {
+			return
+		}
+		b.ensureFocus(ctx)
+		dismissSteamLikeDialogs(b.display, &b.lastSteamDialogDismissAt, true)
+		b.dismissPanoramaPopups(ctx)
+
+		b.joinMatchmaking(ctx)
+		if b.waitForMatch(ctx) {
+			matchOK = true
+			break
+		}
+		log.Printf("[CS2Bot:%d] Re-queue attempt %d/3: waitForMatch failed — retry", b.display, attempt)
+		if !sleepCtx(ctx, 22*time.Second) {
+			return
+		}
+	}
+	if !matchOK {
+		log.Printf("[CS2Bot:%d] Re-queue aborted after 3 waitForMatch failures", b.display)
+		return
+	}
+	if !b.waitForPlayablePawn(ctx) {
+		log.Printf("[CS2Bot:%d] Re-queue: waitForPlayablePawn failed", b.display)
+		return
+	}
+	b.ensureFocus(ctx)
+
+	b.mu.Lock()
+	if b.phase != PhaseAlive && b.phase != PhaseDead {
+		b.phase = PhaseAlive
+	}
+	if b.lastGSI != nil && b.lastGSI.Map != nil {
+		b.sessionMapName = strings.TrimSpace(b.lastGSI.Map.Name)
+	}
+	b.autoplayLive = true
+	b.mu.Unlock()
+
+	log.Printf("[CS2Bot:%d] Re-queue OK — autoplay map=%q", b.display, b.sessionMapName)
+	b.pickBehavior()
 }
 
 // ─────────────────── console log parsing ────────────────────
@@ -1326,14 +1478,12 @@ func isCS2RunningOnDisplay(display int) bool {
 	if display < 0 {
 		return true
 	}
-	want := []byte(fmt.Sprintf("DISPLAY=:%d", display))
-	for _, pid := range pids {
-		envPath := filepath.Join("/proc", pid, "environ")
-		data, err := os.ReadFile(envPath)
-		if err != nil {
+	for _, pidStr := range pids {
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil || pid <= 0 {
 			continue
 		}
-		if bytes.Contains(data, want) {
+		if pidAssociatesWithDisplay(pid, display) {
 			return true
 		}
 	}
@@ -1386,6 +1536,11 @@ func (b *CS2Bot) tick(ctx context.Context) {
 	live := b.autoplayLive
 	phase := b.phase
 	b.mu.Unlock()
+
+	// Steam Remote Play / «Play away» notifications during launch (xdotool on Linux — см. steam_dialog_linux.go).
+	if !live || phase == PhaseWaitMapLoad {
+		maybeDismissSteamDialogs(b.display, &b.lastSteamDialogDismissAt)
+	}
 
 	// Память: каждый тик бота — драйвер process_vm_readv + sigscan с первого же опроса (не ждём autoplay live).
 	b.pollCS2MemoryNav()
@@ -1460,23 +1615,23 @@ func (b *CS2Bot) emitMemTelemetry(memPollRan bool) {
 		}
 	}
 	ev := map[string]interface{}{
-		"display":                b.display,
-		"bot_tick":               b.tickCount,
-		"ts_ms":                  time.Now().UnixMilli(),
-		"target_hz":              hz,
-		"mem_poll_ran":           memPollRan,
-		"phase":                  b.phase.String(),
-		"autoplay_live":          b.autoplayLive,
-		"mem_driver":             b.memDriver != nil,
-		"mem_poll_ok":            b.lastMemPollOK,
-		"mem_poll_err":           b.lastMemPollErr,
-		"mem_status":             memStatus,
-		"snapshot_fail_streak":   b.memSnapshotFailStreak,
-		"mem_nav_active":         b.memNavActive,
-		"esp_box_count":          b.lastEspBoxCount,
-		"nav_route_len":          len(b.navRoute),
-		"nav_route_step":         b.navRouteStep,
-		"yolo":                   b.yolo != nil,
+		"display":              b.display,
+		"bot_tick":             b.tickCount,
+		"ts_ms":                time.Now().UnixMilli(),
+		"target_hz":            hz,
+		"mem_poll_ran":         memPollRan,
+		"phase":                b.phase.String(),
+		"autoplay_live":        b.autoplayLive,
+		"mem_driver":           b.memDriver != nil,
+		"mem_poll_ok":          b.lastMemPollOK,
+		"mem_poll_err":         b.lastMemPollErr,
+		"mem_status":           memStatus,
+		"snapshot_fail_streak": b.memSnapshotFailStreak,
+		"mem_nav_active":       b.memNavActive,
+		"esp_box_count":        b.lastEspBoxCount,
+		"nav_route_len":        len(b.navRoute),
+		"nav_route_step":       b.navRouteStep,
+		"yolo":                 b.yolo != nil,
 	}
 	if !b.lastMemPollAt.IsZero() {
 		ev["mem_poll_age_ms"] = time.Since(b.lastMemPollAt).Milliseconds()
@@ -2341,6 +2496,7 @@ func (b *CS2Bot) releaseAll() {
 // ─────────────────────── focus / setup ───────────────────────
 
 func (b *CS2Bot) ensureFocus(ctx context.Context) {
+	maybeDismissSteamDialogs(b.display, &b.lastSteamDialogDismissAt)
 	log.Printf("[CS2Bot:%d] Ensuring game focus...", b.display)
 
 	b.input.InvalidateWindowCache()

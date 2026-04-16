@@ -180,7 +180,7 @@ func loadCS2MemConfig(path string) (cs2MemoryJSON, error) {
 		return cs2MemoryJSON{}, err
 	}
 	if j.ModuleSubstr == "" {
-		j.ModuleSubstr = "libclient"
+		j.ModuleSubstr = "libclient.so"
 	}
 	return j, nil
 }

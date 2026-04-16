@@ -27,6 +27,7 @@ RUN dpkg --add-architecture i386 && \
     dbus \
     dbus-x11 \
     xterm \
+    xdotool \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -s /bin/bash steam && \

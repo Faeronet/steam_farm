@@ -261,7 +261,7 @@ func loadCS2MemFromDumperDir(dir string) (cs2MemoryJSON, error) {
 	}
 
 	out := cs2MemoryJSON{
-		ModuleSubstr:                   "libclient",
+		ModuleSubstr:                   "libclient.so",
 		DwLocalPlayerPawn:              dw,
 		DwEntityList:                   dwEnt,
 		DwLocalPlayerController:        dwCtrl,

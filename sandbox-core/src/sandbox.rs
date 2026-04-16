@@ -140,8 +140,9 @@ pub async fn run(cfg: LaunchConfig) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let game_pid = supervisor.game_pid();
+    let display = cfg.display;
     let monitor_handle = tokio::spawn(async move {
-        monitor::run(game_pid).await;
+        monitor::run(game_pid, display).await;
     });
 
     // Watch Steam logs for debugging

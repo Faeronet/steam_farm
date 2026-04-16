@@ -12,8 +12,6 @@ fn read_proc_stat(pid: u32) -> Option<ProcStat> {
     let content = fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
     let close_paren = content.rfind(')')?;
     let fields: Vec<&str> = content[close_paren + 2..].split_whitespace().collect();
-    // After ") state": ppid(1) pgrp(2) session(3) tty(4) tpgid(5) flags(6)
-    // minflt(7) cminflt(8) majflt(9) cmajflt(10) utime(11) stime(12)
     let utime = fields.get(11)?.parse().ok()?;
     let stime = fields.get(12)?.parse().ok()?;
     Some(ProcStat { utime, stime })
@@ -58,7 +56,78 @@ fn collect_descendant_pids(root: u32) -> Vec<u32> {
     result
 }
 
-pub async fn run(game_pid: Option<u32>) {
+/// comm==cs2 или путь linuxsteamrt64/cs2 в cmdline (snap может не класть потомка в дерево супервизора).
+fn is_cs2_process(pid: u32) -> bool {
+    let Ok(comm) = fs::read_to_string(format!("/proc/{}/comm", pid)) else {
+        return false;
+    };
+    if comm.trim() == "cs2" {
+        return true;
+    }
+    let Ok(cmd) = fs::read(format!("/proc/{}/cmdline", pid)) else {
+        return false;
+    };
+    let lossy = String::from_utf8_lossy(&cmd);
+    if lossy.contains("linuxsteamrt64/cs2") {
+        return true;
+    }
+    // Репаковки / proot
+    lossy.contains("Counter-Strike Global Offensive") && lossy.contains("cs2")
+}
+
+/// Совпадает с Go environMatchesDisplay: SFARM_DISPLAY, DISPLAY=:N, DISPLAY=:N.0
+fn environ_matches_display(pid: u32, display: u16) -> bool {
+    let Ok(data) = fs::read(format!("/proc/{}/environ", pid)) else {
+        return false;
+    };
+    for needle in [
+        format!("SFARM_DISPLAY={}\0", display),
+        format!("DISPLAY=:{}\0", display),
+        format!("DISPLAY=:{}.0\0", display),
+    ] {
+        let n = needle.as_bytes();
+        if data.len() >= n.len() && data.windows(n.len()).any(|w| w == n) {
+            return true;
+        }
+    }
+    false
+}
+
+fn all_numeric_pids() -> Vec<u32> {
+    let mut out = Vec::new();
+    let Ok(dir) = fs::read_dir("/proc") else {
+        return out;
+    };
+    for e in dir.flatten() {
+        let name = e.file_name();
+        let Some(s) = name.to_str() else { continue };
+        if let Ok(pid) = s.parse::<u32>() {
+            out.push(pid);
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Сначала дерево супервизора/Steam; если cs2 не в дереве (snap/reparent) — весь хост с фильтром DISPLAY.
+fn find_cs2_pid(monitored: &[u32], display: u16) -> Option<u32> {
+    for &p in monitored {
+        if is_cs2_process(p) {
+            return Some(p);
+        }
+    }
+    for p in all_numeric_pids() {
+        if monitored.contains(&p) {
+            continue;
+        }
+        if is_cs2_process(p) && environ_matches_display(p, display) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+pub async fn run(game_pid: Option<u32>, display: u16) {
     let pid = match game_pid {
         Some(p) if p > 0 => p,
         _ => return,
@@ -79,12 +148,18 @@ pub async fn run(game_pid: Option<u32>) {
     }
 
     let mut last_cs2_emit: Option<u32> = None;
+    let mut loop_idx: u32 = 0;
 
     loop {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Первые ~2 мин чаще — чтобы cs2_pid дошёл до desktop до grace Phase 1.
+        let delay = if loop_idx < 120 {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_secs(5)
+        };
+        tokio::time::sleep(delay).await;
+        loop_idx = loop_idx.saturating_add(1);
 
-        // Collect all descendants of both the game PID and our supervisor PID
-        // to catch processes that may have been reparented
         let mut all_pids = collect_descendant_pids(supervisor_pid);
         if !all_pids.contains(&pid) {
             let game_pids = collect_descendant_pids(pid);
@@ -95,26 +170,16 @@ pub async fn run(game_pid: Option<u32>) {
             }
         }
 
-        // Exclude the supervisor itself and its direct helper processes (Xvfb, x11vnc)
-        // by only counting processes that are not the supervisor
-        let monitored: Vec<u32> = all_pids.into_iter()
+        let monitored: Vec<u32> = all_pids
+            .into_iter()
             .filter(|&p| p != supervisor_pid)
             .collect();
 
-        // Сообщаем PID cs2 в desktop: у пользователя pgrep не видит root/hidepid.
-        let mut cs2_child: Option<u32> = None;
-        for &p in &monitored {
-            let Ok(content) = fs::read_to_string(format!("/proc/{}/comm", p)) else {
-                continue;
-            };
-            if content.trim() == "cs2" {
-                cs2_child = Some(p);
-                break;
-            }
-        }
+        let cs2_child = find_cs2_pid(&monitored, display);
+
         if cs2_child != last_cs2_emit {
-            if let Some(pid) = cs2_child {
-                ipc::emit(&IpcEvent::Cs2Pid { pid });
+            if let Some(cpid) = cs2_child {
+                ipc::emit(&IpcEvent::Cs2Pid { pid: cpid });
             } else if last_cs2_emit.is_some() {
                 ipc::emit(&IpcEvent::Cs2Pid { pid: 0 });
             }
@@ -140,8 +205,6 @@ pub async fn run(game_pid: Option<u32>) {
 
         let now = Instant::now();
         let delta_secs = now.duration_since(prev_time).as_secs_f64();
-        // Сумма utime+stime по процессам даёт «проценты по ядрам» (до N×100%). Делим на число
-        // онлайн-CPU — отображаем долю машины 0…100%, как ожидают в UI.
         let ncpu = std::thread::available_parallelism()
             .map(|n| n.get() as f64)
             .unwrap_or(1.0)

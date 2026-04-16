@@ -87,9 +87,8 @@ XDG_VIDEOS_DIR="$HOME/Videos"
         fs::set_permissions(fake_bin.join("zenity"), fs::Permissions::from_mode(0o755))?;
     }
 
-    // Steam directory structure is created by the snap inner_script
-    // which builds a shadow dir with a steamwebhelper wrapper.
-    // For non-snap fallback, symlinks are set up in start_via_direct().
+    // Полная «тень» Steam ($HOME/.local/share/Steam) создаётся в ProcessSupervisor::ensure_steam_shadow_layout
+    // (скрипт scripts/steam_shadow_setup.sh) для прямого запуска — как во внутреннем snap-скрипте.
 
     Ok(base)
 }

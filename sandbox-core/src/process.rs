@@ -836,6 +836,72 @@ while true; do sleep 60; done
         Ok(())
     }
 
+    /// Как у snap: копия/симлинки в `$HOME/.local/share/Steam` — без этого прямой steam.sh видит пустой HOME и даёт чёрный экран.
+    async fn ensure_steam_shadow_layout(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let script = include_str!("../scripts/steam_shadow_setup.sh");
+        let sandbox_home = self.base.join("home");
+        let home_s = sandbox_home.display().to_string();
+        let steam_real = self.steam_paths.root.display().to_string();
+        let compat = steam::game_app_id(&self.cfg.game).to_string();
+        let common_folder =
+            steam::steamapps_common_folder_name(&self.cfg.game).unwrap_or("").to_string();
+        let try_fuse = if self.cfg.game == "cs2" { "1" } else { "0" };
+        let snap_common = steam::snap_steam_common_dir(&self.steam_paths.root)
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let script_path = self.base.join("steam_shadow_setup.sh");
+        std::fs::write(&script_path, script)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+
+        let spath = script_path.clone();
+        let home_for_log = home_s.clone();
+        let st = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("bash")
+                .arg(&spath)
+                .env("HOME", &home_s)
+                .env("STEAM_REAL", &steam_real)
+                .env("COMPAT_APP_ID", &compat)
+                .env("COMMON_FOLDER", &common_folder)
+                .env("TRY_FUSE_CS2_OVERLAY", try_fuse)
+                .env("SNAP_COMMON", &snap_common)
+                .status()
+        })
+        .await
+        .map_err(|e| format!("steam_shadow_setup join: {}", e))?
+        .map_err(|e| format!("steam_shadow_setup: {}", e))?;
+        if !st.success() {
+            return Err(format!("steam_shadow_setup.sh failed: {}", st).into());
+        }
+
+        let app_id = steam::game_app_id(&self.cfg.game);
+        if app_id != 0 {
+            let patch_body = steam_cloud_patch_heredoc(&find_sandbox_bin());
+            let patch_script = format!(
+                "export HOME={}; export COMPAT_APP_ID={}; {}",
+                shell_escape_single(&sandbox_home.display().to_string()),
+                app_id,
+                patch_body
+            );
+            let _ = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(&patch_script)
+                    .status()
+            })
+            .await;
+        }
+
+        eprintln!(
+            "[sandbox-{}] Steam shadow ready: {}/.local/share/Steam",
+            self.cfg.id, home_for_log
+        );
+        Ok(())
+    }
+
     async fn start_via_direct(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let disp_for_kill = self.cfg.display;
         tokio::task::spawn_blocking(move || {
@@ -844,6 +910,8 @@ while true; do sleep 60; done
         })
         .await
         .ok();
+
+        self.ensure_steam_shadow_layout().await?;
 
         let display = format!(":{}", self.cfg.display);
         let steam_args = self.build_steam_args();
@@ -859,16 +927,16 @@ while true; do sleep 60; done
             .join(":");
 
         let xauth_sandbox = sandbox_home.join(".Xauthority");
-        let steam_sh_path = self.steam_paths.root.join("steam.sh");
+        let steam_sh_shadow = sandbox_home.join(".local/share/Steam/steam.sh");
 
         // Prefer steam.sh: Valve bootstrap (runtime, pins). Do not spawn steam.sh as the supervised
         // child directly — it often forks the real client and exits with 0, which ends the sandbox
         // and tears down Xvfb/VNC. Same pattern as snap inner script: wait steam.sh then sleep loop.
-        if steam_sh_path.is_file() {
+        // steam.sh must be the copy under $HOME/.local/share/Steam (ensure_steam_shadow_layout).
+        if steam_sh_shadow.is_file() {
             let sh_quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
             let wrapper_path = self.base.join("steam_sh_wrapper.sh");
             let real_home = std::env::var("HOME").unwrap_or_default();
-            let steam_sh_q = sh_quote(&steam_sh_path.display().to_string());
             let args_str = steam_args
                 .iter()
                 .map(|a| sh_quote(a))
@@ -878,16 +946,16 @@ while true; do sleep 60; done
             let wrapper_src = format!(
                 "#!/bin/sh\n\
 export HOME={}\n\
+export STEAMROOT=\"$HOME/.local/share/Steam\"\n\
 export DISPLAY={}\n\
 export SFARM_DISPLAY={}\n\
 export XDG_RUNTIME_DIR={}\n\
 export DBUS_SESSION_BUS_ADDRESS=disabled\n\
 export PATH={}\n\
 export REAL_HOME={}\n\
-export STEAMROOT={}\n\
 export LD_LIBRARY_PATH={}\n\
 if [ -f \"$HOME/.Xauthority\" ]; then export XAUTHORITY=\"$HOME/.Xauthority\"; fi\n\
-{} {} &\n\
+\"$HOME/.local/share/Steam/steam.sh\" {} &\n\
 SPID=$!\n\
 wait $SPID 2>/dev/null || true\n\
 while true; do sleep 60; done\n",
@@ -897,9 +965,7 @@ while true; do sleep 60; done\n",
                 sh_quote(&xdg_runtime.display().to_string()),
                 sh_quote(&new_path),
                 sh_quote(&real_home),
-                sh_quote(&self.steam_paths.root.display().to_string()),
                 sh_quote(&lib_path_str),
-                steam_sh_q,
                 args_str,
             );
             std::fs::write(&wrapper_path, wrapper_src)?;
@@ -938,6 +1004,12 @@ while true; do sleep 60; done\n",
         }
 
         if let Some(ref ld_linux) = self.steam_paths.ld_linux_32 {
+            let shadow_steam_bin = sandbox_home.join(".local/share/Steam/ubuntu12_32/steam");
+            let steam_bin = if shadow_steam_bin.is_file() {
+                shadow_steam_bin
+            } else {
+                self.steam_paths.steam_binary.clone()
+            };
             let script_path = self.base.join("launch_steam.sh");
             let args_str = steam_args.iter()
                 .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
@@ -945,10 +1017,10 @@ while true; do sleep 60; done\n",
                 .join(" ");
 
             let script = format!(
-                "#!/bin/sh\nif [ -f \"$HOME/.Xauthority\" ]; then export XAUTHORITY=\"$HOME/.Xauthority\"; fi\nexport LD_LIBRARY_PATH='{lib}'\n'{ld}' --library-path '{lib}' '{bin}' {args}\n",
+                "#!/bin/sh\nif [ -f \"$HOME/.Xauthority\" ]; then export XAUTHORITY=\"$HOME/.Xauthority\"; fi\nexport STEAMROOT=\"$HOME/.local/share/Steam\"\nexport LD_LIBRARY_PATH='{lib}'\n'{ld}' --library-path '{lib}' '{bin}' {args}\n",
                 ld = ld_linux.display(),
                 lib = lib_path_str,
-                bin = self.steam_paths.steam_binary.display(),
+                bin = steam_bin.display(),
                 args = args_str,
             );
             std::fs::write(&script_path, &script)?;
@@ -964,6 +1036,7 @@ while true; do sleep 60; done\n",
             );
 
             let mut cmd = Command::new(script_path.display().to_string());
+            let steam_root_shadow = sandbox_home.join(".local/share/Steam");
             cmd.env("HOME", &sandbox_home)
                 .env("DISPLAY", &display)
                 .env("SFARM_DISPLAY", self.cfg.display.to_string())
@@ -972,7 +1045,7 @@ while true; do sleep 60; done\n",
                 .env("PATH", &new_path)
                 .env("REAL_HOME", std::env::var("HOME").unwrap_or_default())
                 .env("LD_LIBRARY_PATH", &lib_path_str)
-                .env("STEAMROOT", &self.steam_paths.root)
+                .env("STEAMROOT", &steam_root_shadow)
                 .env("LIBGL_ALWAYS_SOFTWARE", "1");
             if xauth_sandbox.is_file() {
                 cmd.env("XAUTHORITY", xauth_sandbox.as_path());
@@ -1004,13 +1077,16 @@ while true; do sleep 60; done\n",
             "[sandbox-{}] Launching Steam via `steam` from PATH (no steam.sh, no ld-linux)",
             self.cfg.id
         );
+        let steam_root_shadow = sandbox_home.join(".local/share/Steam");
         let mut cmd = Command::new("steam");
         cmd.args(&steam_args)
             .env("HOME", &sandbox_home)
             .env("DISPLAY", &display)
             .env("SFARM_DISPLAY", self.cfg.display.to_string())
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
             .env("DBUS_SESSION_BUS_ADDRESS", "disabled")
-            .env("PATH", &new_path);
+            .env("PATH", &new_path)
+            .env("STEAMROOT", &steam_root_shadow);
         if xauth_sandbox.is_file() {
             cmd.env("XAUTHORITY", xauth_sandbox.as_path());
         } else {

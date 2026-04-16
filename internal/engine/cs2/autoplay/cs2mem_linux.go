@@ -412,7 +412,7 @@ func pollCS2MemImpl(b *CS2Bot) {
 		// Sigscan для заполнения dw_* из .text — с первого тика (CS2 запущен, PID есть). Ворота матча
 		// (SFARM_CS2_MEM_MATCH_GATE) по-прежнему только для MEM_DIAG / дампов / rva-probe, не для драйвера.
 		allowSigScan := true
-		d := tryStartLinuxMemDriver(display, off, src, allowSigScan)
+		d := tryStartLinuxMemDriver(display, b.accountID, off, src, allowSigScan)
 		b.mu.Lock()
 		b.memDriver = d
 		if d == nil {
@@ -594,13 +594,13 @@ func logSigScanDeferredThrottled(display int) {
 	}
 }
 
-func tryStartLinuxMemDriver(display int, off cs2MemoryJSON, sourceLabel string, allowSigScan bool) cs2MemDriver {
+func tryStartLinuxMemDriver(display int, sandboxAccountID int64, off cs2MemoryJSON, sourceLabel string, allowSigScan bool) cs2MemDriver {
 	// m_v_old_origin must be non-zero (struct field offset from dumper, same on Windows/Linux).
 	if off.MvOldOrigin == 0 {
 		log.Printf("[CS2Mem:%d] offsets from %q: m_v_old_origin must be non-zero", display, sourceLabel)
 		return nil
 	}
-	pid, ok := cs2PIDForDisplay(display)
+	pid, ok := cs2PIDForDisplay(display, sandboxAccountID)
 	if !ok || pid <= 0 {
 		log.Printf("[CS2Mem:%d] no cs2 pid (DISPLAY=:%d match failed); set SFARM_CS2_PID or fix DISPLAY on game process", display, display)
 		return nil
@@ -686,6 +686,45 @@ func tryStartLinuxMemDriver(display int, off cs2MemoryJSON, sourceLabel string, 
 	}
 	maybeScheduleModuleMemoryDump(display, m)
 	return m
+}
+
+// pidBelongsToSandboxAccount: HOME/.../sfarm-{id} в environ или maps (Steam передаёт; cs2 может без SFARM_DISPLAY).
+func pidBelongsToSandboxAccount(pid int, accountID int64) bool {
+	if accountID <= 0 {
+		return false
+	}
+	needle := fmt.Sprintf("sfarm-%d", accountID)
+	checkOne := func(p int) bool {
+		environPath := filepath.Join("/proc", strconv.Itoa(p), "environ")
+		data, err := os.ReadFile(environPath)
+		if err == nil {
+			if bytes.Contains(data, []byte(fmt.Sprintf("SFARM_DISPLAY=%d\x00", accountID))) || bytes.Contains(data, []byte(needle)) {
+				return true
+			}
+		}
+		mapPath := filepath.Join("/proc", strconv.Itoa(p), "maps")
+		data2, err := os.ReadFile(mapPath)
+		if err == nil && strings.Contains(string(data2), needle) {
+			return true
+		}
+		return false
+	}
+	if checkOne(pid) {
+		return true
+	}
+	seen := make(map[int]bool)
+	p := readProcPPid(pid)
+	for step := 0; step < 64 && p > 1; step++ {
+		if seen[p] {
+			break
+		}
+		seen[p] = true
+		if checkOne(p) {
+			return true
+		}
+		p = readProcPPid(p)
+	}
+	return false
 }
 
 func readProcPPid(pid int) int {
@@ -1031,7 +1070,7 @@ func pidAssociatesWithDisplay(pid int, display int) bool {
 	return false
 }
 
-func cs2PIDForDisplay(display int) (int, bool) {
+func cs2PIDForDisplay(display int, sandboxAccountID int64) (int, bool) {
 	pids := cs2PIDsLinux()
 	if len(pids) > 1 && strings.TrimSpace(os.Getenv(envCS2PID)) != "" {
 		log.Printf("[CS2Mem] %s игнорируется при нескольких процессах cs2 — привязка по DISPLAY/предкам", envCS2PID)
@@ -1049,6 +1088,18 @@ func cs2PIDForDisplay(display int) (int, bool) {
 	if display < 0 {
 		p, err := strconv.Atoi(pids[0])
 		return p, err == nil && p > 0
+	}
+	// Каталог песочницы (sfarm-{accountID}) надёжнее DISPLAY/X11 в среде cs2.
+	if sandboxAccountID > 0 {
+		for _, pidStr := range pids {
+			p, err := strconv.Atoi(pidStr)
+			if err != nil || p <= 0 {
+				continue
+			}
+			if pidBelongsToSandboxAccount(p, sandboxAccountID) {
+				return p, true
+			}
+		}
 	}
 	for _, pidStr := range pids {
 		p, err := strconv.Atoi(pidStr)

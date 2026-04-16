@@ -11,7 +11,7 @@ import (
 )
 
 // Env SFARM_CS2_MEM_CONFIG — path to JSON (see config/cs2_memory.example.json).
-// Optional: SFARM_CS2_PID — numeric pid; otherwise display-matched cs2 like isCS2RunningOnDisplay.
+// Optional: SFARM_CS2_PID — numeric pid; иначе привязка по account (sfarm-{id} в /proc) и DISPLAY/X11.
 
 const envCS2MemConfig = "SFARM_CS2_MEM_CONFIG"
 const envCS2PID = "SFARM_CS2_PID"

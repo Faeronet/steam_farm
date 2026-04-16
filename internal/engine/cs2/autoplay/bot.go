@@ -748,7 +748,7 @@ func (b *CS2Bot) waitForCS2Process(ctx context.Context) bool {
 	iter := 0
 	for {
 		win := b.input.HasCS2Window()
-		proc := isCS2RunningOnDisplay(b.display)
+		proc := isCS2RunningOnDisplay(b.display, b.accountID)
 		if win && proc {
 			log.Printf("[CS2Bot:%d] CS2 process (DISPLAY=:%d) + window OK", b.display, b.display)
 			return true
@@ -1464,19 +1464,29 @@ func (b *CS2Bot) checkConsoleLog() string {
 // ─────────────────── process detection ────────────────────
 
 func isCS2Running() bool {
-	return isCS2RunningOnDisplay(-1)
+	return isCS2RunningOnDisplay(-1, 0)
 }
 
-// isCS2RunningOnDisplay returns true if a cs2 process has DISPLAY=:display in its
-// environment. Use display >= 0 for sandbox Xvfb; display < 0 skips DISPLAY check
-// (any cs2 on the machine — legacy helper).
-func isCS2RunningOnDisplay(display int) bool {
+// isCS2RunningOnDisplay: при sandboxAccountID>0 — приоритет sfarm-{id} в environ/maps (и предки);
+// иначе DISPLAY/X11. display<0 — любой cs2 (legacy).
+func isCS2RunningOnDisplay(display int, sandboxAccountID int64) bool {
 	pids := cs2PIDsLinux()
 	if len(pids) == 0 {
 		return false
 	}
 	if display < 0 {
 		return true
+	}
+	if sandboxAccountID > 0 {
+		for _, pidStr := range pids {
+			pid, err := strconv.Atoi(pidStr)
+			if err != nil || pid <= 0 {
+				continue
+			}
+			if pidBelongsToSandboxAccount(pid, sandboxAccountID) {
+				return true
+			}
+		}
 	}
 	for _, pidStr := range pids {
 		pid, err := strconv.Atoi(pidStr)

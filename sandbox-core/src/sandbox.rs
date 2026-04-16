@@ -6,6 +6,42 @@ use crate::monitor;
 use crate::process::ProcessSupervisor;
 use crate::steam;
 
+/// Тот же шаблон, что в home песочницы — нужен и в `/root/.config`, иначе `snap run steam` (обёртка до inner_script)
+/// при **euid=root** дергает `grep /root/.config/user-dirs.dirs` и падает с пустым `XDG_DESKTOP_DIR` → `ln ... Desktop -> ''`.
+const USER_DIRS_DIRS: &str = r#"# Written by sfarm-sandbox
+XDG_DESKTOP_DIR="$HOME/Desktop"
+XDG_DOWNLOAD_DIR="$HOME/Downloads"
+XDG_TEMPLATES_DIR="$HOME/Templates"
+XDG_PUBLICSHARE_DIR="$HOME/Public"
+XDG_DOCUMENTS_DIR="$HOME/Documents"
+XDG_MUSIC_DIR="$HOME/Music"
+XDG_PICTURES_DIR="$HOME/Pictures"
+XDG_VIDEOS_DIR="$HOME/Videos"
+"#;
+
+/// Snap Steam до передачи HOME в inner_script читает XDG из профиля root — без файлов в `/root/.config` в логе:
+/// `grep: /root/.config/user-dirs.dirs`, `ln: ... Desktop -> ''`, и клиент может не подняться.
+fn ensure_root_xdg_for_snap_steam() {
+    if unsafe { libc::getuid() } != 0 {
+        return;
+    }
+    let _ = fs::create_dir_all("/root/.config");
+    let _ = fs::write("/root/.config/user-dirs.dirs", USER_DIRS_DIRS);
+    let _ = fs::create_dir_all("/root/.local/share/icons/hicolor");
+    for d in [
+        "Desktop",
+        "Downloads",
+        "Documents",
+        "Templates",
+        "Public",
+        "Music",
+        "Pictures",
+        "Videos",
+    ] {
+        let _ = fs::create_dir_all(PathBuf::from("/root").join(d));
+    }
+}
+
 /// Каталог данных песочницы. Для snap-Steam берётся из того же `.../snap/steam/common`, что и
 /// найденный `steam_paths.root` — иначе при запуске sfarm от root путь уезжает в `/root/snap/...`.
 pub fn sandbox_dir(id: u64, steam_paths: &steam::SteamPaths) -> PathBuf {
@@ -56,19 +92,7 @@ fn setup_dirs(cfg: &LaunchConfig, steam_paths: &steam::SteamPaths) -> Result<Pat
 
     // steam.sh / snap вызывают grep к user-dirs.dirs и лезут в Desktop — без этого root/snap падает на 2-й песочнице.
     fs::create_dir_all(base.join("home/.config"))?;
-    fs::write(
-        base.join("home/.config/user-dirs.dirs"),
-        r#"# Written by sfarm-sandbox
-XDG_DESKTOP_DIR="$HOME/Desktop"
-XDG_DOWNLOAD_DIR="$HOME/Downloads"
-XDG_TEMPLATES_DIR="$HOME/Templates"
-XDG_PUBLICSHARE_DIR="$HOME/Public"
-XDG_DOCUMENTS_DIR="$HOME/Documents"
-XDG_MUSIC_DIR="$HOME/Music"
-XDG_PICTURES_DIR="$HOME/Pictures"
-XDG_VIDEOS_DIR="$HOME/Videos"
-"#,
-    )?;
+    fs::write(base.join("home/.config/user-dirs.dirs"), USER_DIRS_DIRS)?;
     for d in ["Desktop", "Downloads", "Documents"] {
         fs::create_dir_all(base.join("home").join(d))?;
     }
@@ -90,6 +114,8 @@ XDG_VIDEOS_DIR="$HOME/Videos"
     // Steam directory structure is created by the snap inner_script
     // which builds a shadow dir with a steamwebhelper wrapper.
     // For non-snap fallback, symlinks are set up in start_via_direct().
+
+    ensure_root_xdg_for_snap_steam();
 
     Ok(base)
 }

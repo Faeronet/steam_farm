@@ -211,6 +211,7 @@ impl ProcessSupervisor {
         // -noshm: при переполнении IPC /dev/shm x11vnc падает с «shmget: No space left on device»
         // (это лимит shm, не диск). Polling через XGetImage без MIT-SHM медленнее, но стабильнее.
         // -noscr: без RECORD/scrollcopyrect — иначе на части хостов/клиентов VNC «мигает» и полосит экран.
+        // -nowireframe / -nowcr: иначе x11vnc включает wireframe + CopyRect — на noVNC/tight часто «мигает» и артефакты.
         // -defer: слегка сгладить поток прямоугольников (меньше белых вспышек при tight+медленной сети).
         let mut child = Command::new(&vnc_bin)
             .args([
@@ -220,8 +221,10 @@ impl ProcessSupervisor {
                 "-noxdamage",
                 "-noshm",
                 "-noscr",
+                "-nowireframe",
+                "-nowcr",
                 "-defer",
-                "15",
+                "20",
             ])
             .env_remove("LD_LIBRARY_PATH")
             .stdout(Stdio::null())

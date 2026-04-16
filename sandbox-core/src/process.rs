@@ -211,6 +211,7 @@ impl ProcessSupervisor {
         // -noshm: при переполнении IPC /dev/shm x11vnc падает с «shmget: No space left on device»
         // (это лимит shm, не диск). Polling через XGetImage без MIT-SHM медленнее, но стабильнее.
         // -noscr: без RECORD/scrollcopyrect — иначе на части хостов/клиентов VNC «мигает» и полосит экран.
+        // -nowireframe/-nowcr: иначе wireframe + CopyRect — на noVNC часто мигание и артефакты.
         // -defer: слегка сгладить поток прямоугольников (меньше белых вспышек при tight+медленной сети).
         let mut child = Command::new(&vnc_bin)
             .args([
@@ -220,10 +221,13 @@ impl ProcessSupervisor {
                 "-noxdamage",
                 "-noshm",
                 "-noscr",
+                "-nowireframe",
+                "-nowcr",
                 "-defer",
-                "15",
+                "18",
             ])
             .env_remove("LD_LIBRARY_PATH")
+            .env_remove("XAUTHORITY")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -373,6 +377,9 @@ impl ProcessSupervisor {
 export DISPLAY='{display}'
 export SFARM_DISPLAY='{display_num}'
 export HOME='{snap_home}'
+# От sudo/root часто наследуется XAUTHORITY=…/root/.Xauthority — тогда libX11: «Authorization required…»
+# к нашему Xvfb (-ac). Сбрасываем, чтобы использовался доступ без cookie.
+unset XAUTHORITY
 export STEAM_DISABLE_BROWSER_SANDBOX=1
 export CEF_DISABLE_SANDBOX=1
 export SDL_VIDEODRIVER=x11
@@ -628,7 +635,8 @@ while true; do sleep 60; done
             .env("XDG_CONFIG_HOME", &xdg_cfg)
             .env("XDG_DATA_HOME", &xdg_data)
             .env("XDG_RUNTIME_DIR", self.base.join("xdg").display().to_string())
-            .env("SFARM_DISPLAY", self.cfg.display.to_string());
+            .env("SFARM_DISPLAY", self.cfg.display.to_string())
+            .env_remove("XAUTHORITY");
         cmd.stdout(Stdio::null())
             .stderr(Stdio::piped());
 
@@ -681,7 +689,7 @@ while true; do sleep 60; done
                 .join(" ");
 
             let script = format!(
-                "#!/bin/sh\nexport LD_LIBRARY_PATH='{lib}'\n'{ld}' --library-path '{lib}' '{bin}' {args}\n",
+                "#!/bin/sh\nunset XAUTHORITY\nexport LD_LIBRARY_PATH='{lib}'\n'{ld}' --library-path '{lib}' '{bin}' {args}\n",
                 ld = ld_linux.display(),
                 lib = lib_path_str,
                 bin = self.steam_paths.steam_binary.display(),
@@ -706,7 +714,8 @@ while true; do sleep 60; done
                 .env("REAL_HOME", std::env::var("HOME").unwrap_or_default())
                 .env("LD_LIBRARY_PATH", &lib_path_str)
                 .env("STEAMROOT", &self.steam_paths.root)
-                .env("LIBGL_ALWAYS_SOFTWARE", "1");
+                .env("LIBGL_ALWAYS_SOFTWARE", "1")
+                .env_remove("XAUTHORITY");
             cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
             let mut child = cmd.spawn()
@@ -741,7 +750,8 @@ while true; do sleep 60; done
             .env("DISPLAY", &display)
             .env("SFARM_DISPLAY", self.cfg.display.to_string())
             .env("DBUS_SESSION_BUS_ADDRESS", "disabled")
-            .env("PATH", &new_path);
+            .env("PATH", &new_path)
+            .env_remove("XAUTHORITY");
         cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
         let mut child = cmd.spawn()

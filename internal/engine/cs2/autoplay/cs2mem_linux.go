@@ -797,7 +797,121 @@ func pidUsesX11DisplaySocket(pid int, display int) bool {
 		if n, _ := fmt.Sscanf(link, "socket:[%d]", &in); n != 1 {
 			continue
 		}
-		if p, ok := table[in]; ok && (p == wantPath || strings.HasSuffix(p, "/"+wantSuf)) {
+		if p, ok := table[in]; ok && (p == wantPath || strings.HasSuffix(p, "/"+wantSuf) || strings.Contains(p, ".X11-unix/"+wantSuf)) {
+			return true
+		}
+	}
+	return false
+}
+
+// x11TCPPort — стандартный TCP-порт X11 (Xvfb с -listen tcp: см. sandbox process.rs).
+func x11TCPPort(display int) uint16 {
+	if display < 0 || display > 0xffff-6000 {
+		return 0
+	}
+	return uint16(6000 + display)
+}
+
+var (
+	tcpX11InodeMu    sync.Mutex
+	tcpX11InodeCache map[tcpX11CacheKey]tcpX11CacheVal
+)
+
+type tcpX11CacheKey struct {
+	pid  int
+	port uint16
+}
+
+type tcpX11CacheVal struct {
+	at     time.Time
+	inodes map[uint64]struct{}
+}
+
+func parseProcNetTCPInode(fields []string) (uint64, bool) {
+	if len(fields) < 11 {
+		return 0, false
+	}
+	if u, err := strconv.ParseUint(fields[10], 10, 64); err == nil && u > 0 {
+		return u, true
+	}
+	return 0, false
+}
+
+// inodes TCP-сокетов с удалённым 127.0.0.1:(6000+display) или ::1:(6000+display) в namespace процесса.
+func tcpInodesLocalhostX11Port(pid int, wantPort uint16) map[uint64]struct{} {
+	if wantPort == 0 {
+		return nil
+	}
+	wantHex := fmt.Sprintf("%04X", wantPort)
+	now := time.Now()
+	key := tcpX11CacheKey{pid: pid, port: wantPort}
+	tcpX11InodeMu.Lock()
+	if tcpX11InodeCache != nil {
+		if v, ok := tcpX11InodeCache[key]; ok && now.Sub(v.at) < 250*time.Millisecond && v.inodes != nil {
+			tcpX11InodeMu.Unlock()
+			return v.inodes
+		}
+	} else {
+		tcpX11InodeCache = make(map[tcpX11CacheKey]tcpX11CacheVal)
+	}
+	out := make(map[uint64]struct{})
+	add := func(path string) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "sl") {
+				continue
+			}
+			f := strings.Fields(line)
+			inode, ok := parseProcNetTCPInode(f)
+			if !ok {
+				continue
+			}
+			rem := f[2]
+			if !strings.HasSuffix(rem, ":"+wantHex) {
+				continue
+			}
+			// Клиент X к 127.0.0.1:N или ::1:N (tcp / tcp6).
+			if strings.HasPrefix(rem, "0100007F:") ||
+				strings.HasPrefix(rem, "00000000000000000000000000000001:") {
+				out[inode] = struct{}{}
+			}
+		}
+	}
+	add(filepath.Join("/proc", strconv.Itoa(pid), "net/tcp"))
+	add(filepath.Join("/proc", strconv.Itoa(pid), "net/tcp6"))
+	tcpX11InodeCache[key] = tcpX11CacheVal{at: now, inodes: out}
+	tcpX11InodeMu.Unlock()
+	return out
+}
+
+func pidUsesX11TCPDisplay(pid int, display int) bool {
+	port := x11TCPPort(display)
+	if port == 0 {
+		return false
+	}
+	inodes := tcpInodesLocalhostX11Port(pid, port)
+	if len(inodes) == 0 {
+		return false
+	}
+	fdDir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
+	entries, err := os.ReadDir(fdDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		link, err := os.Readlink(filepath.Join(fdDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var in uint64
+		if n, _ := fmt.Sscanf(link, "socket:[%d]", &in); n != 1 {
+			continue
+		}
+		if _, ok := inodes[in]; ok {
 			return true
 		}
 	}
@@ -814,10 +928,13 @@ func procMatchesDisplay(pid int, display int) bool {
 	if pidUsesX11DisplaySocket(pid, display) {
 		return true
 	}
+	if pidUsesX11TCPDisplay(pid, display) {
+		return true
+	}
 	return false
 }
 
-// pidAssociatesWithDisplay: environ + X11 unix-сокет у процесса или предков (Steam/snap без DISPLAY в environ у cs2).
+// pidAssociatesWithDisplay: environ + unix-сокет X11 + TCP :6000+N (Xvfb -listen tcp) у процесса или предков.
 func pidAssociatesWithDisplay(pid int, display int) bool {
 	if display < 0 {
 		return true

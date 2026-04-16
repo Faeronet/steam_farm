@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -95,6 +96,26 @@ func findSandboxBinary() (string, error) {
 	return "", fmt.Errorf("sfarm-sandbox binary not found; build with: cd sandbox-core && cargo build --release")
 }
 
+// envForSandbox drops SFARM_USE_STEAM_SNAP so a machine-wide or systemd setting cannot
+// force snap Steam for every child. Snap + TCP X11 + MIT-MAGIC-COOKIE against Xvfb
+// breaks with "Authorization required..."; sandbox uses start_via_direct (unix :N).
+// Opt-in for snap: run sfarm-sandbox manually with SFARM_USE_STEAM_SNAP=1, or set
+// SFARM_SANDBOX_INHERIT_STEAM_SNAP=1 on sfarm-desktop to pass the variable through.
+func envForSandbox() []string {
+	if os.Getenv("SFARM_SANDBOX_INHERIT_STEAM_SNAP") == "1" {
+		return os.Environ()
+	}
+	base := os.Environ()
+	out := base[:0]
+	for _, e := range base {
+		if strings.HasPrefix(e, "SFARM_USE_STEAM_SNAP=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeInstance, error) {
 	configJSON, err := json.Marshal(cfg)
 	if err != nil {
@@ -103,6 +124,7 @@ func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeIn
 
 	childCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(childCtx, n.sandboxBin, "launch", "--config", string(configJSON))
+	cmd.Env = envForSandbox()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

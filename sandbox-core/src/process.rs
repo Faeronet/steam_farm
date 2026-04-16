@@ -188,20 +188,16 @@ fn xauth_nlist_for_merge(auth: &std::path::Path) -> Option<String> {
     Some(s)
 }
 
-fn steam_snap_disabled_by_env() -> bool {
-    if let Ok(s) = std::env::var("SFARM_STEAM_NO_SNAP") {
-        let t = s.to_lowercase();
-        if matches!(t.as_str(), "1" | "true" | "yes") {
-            return true;
+/// По умолчанию Steam запускается через `steam.sh` на хосте (`start_via_direct`, unix `DISPLAY=:N`) —
+/// совместимо с Xvfb и `.Xauthority`. Snap изолирует сеть/файлы и ломает X11; opt-in: `SFARM_USE_STEAM_SNAP=1`.
+fn steam_snap_opt_in() -> bool {
+    match std::env::var("SFARM_USE_STEAM_SNAP") {
+        Ok(s) => {
+            let t = s.to_lowercase();
+            matches!(t.as_str(), "1" | "true" | "yes")
         }
+        Err(_) => false,
     }
-    if let Ok(s) = std::env::var("SFARM_USE_STEAM_SNAP") {
-        let t = s.to_lowercase();
-        if matches!(t.as_str(), "0" | "false" | "no") {
-            return true;
-        }
-    }
-    false
 }
 
 pub struct ProcessSupervisor {
@@ -466,15 +462,13 @@ impl ProcessSupervisor {
     }
 
     pub async fn start_game(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if snap_steam_available() && !steam_snap_disabled_by_env() {
+        if snap_steam_available() && steam_snap_opt_in() {
+            eprintln!(
+                "[sandbox-{}] SFARM_USE_STEAM_SNAP=1 — Steam через snap (TCP/X11 хрупко; без этого используется steam.sh на хосте)",
+                self.cfg.id
+            );
             self.start_via_snap().await
         } else {
-            if snap_steam_available() && steam_snap_disabled_by_env() {
-                eprintln!(
-                    "[sandbox-{}] SFARM_STEAM_NO_SNAP=1 — Steam без snap, DISPLAY=unix :{} (обход изоляции snap + X11)",
-                    self.cfg.id, self.cfg.display
-                );
-            }
             self.start_via_direct().await
         }
     }

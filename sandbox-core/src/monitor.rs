@@ -115,30 +115,45 @@ fn all_numeric_pids() -> Vec<u32> {
     out
 }
 
-/// В maps уже есть клиентская libclient (согласовано с Go moduleImageBase + запас под fuse/steamrt).
-fn maps_has_game_libclient(pid: u32) -> bool {
+/// Тот же критерий, что Go `moduleImageBase` для libclient: путь из maps (fields[5:]), не steamclient/panorama,
+/// содержит `libclient` и **`linuxsteamrt64`** (без этого desktop не откроет модуль — см. cs2mem_linux.go).
+fn maps_line_mapping_path(line: &str) -> Option<String> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    if fields.len() < 6 {
+        return None;
+    }
+    let rng: Vec<&str> = fields[0].split('-').collect();
+    if rng.len() != 2 {
+        return None;
+    }
+    if u64::from_str_radix(rng[0], 16).is_err() || u64::from_str_radix(rng[1], 16).is_err() {
+        return None;
+    }
+    Some(fields[5..].join(" "))
+}
+
+fn maps_has_go_libclient_linuxsteamrt(pid: u32) -> bool {
     let Ok(s) = fs::read_to_string(format!("/proc/{}/maps", pid)) else {
         return false;
     };
     for line in s.lines() {
-        let l = line.to_lowercase();
-        if l.contains("steamclient") || l.contains("panorama") {
+        let Some(mpath) = maps_line_mapping_path(line) else {
+            continue;
+        };
+        if mpath.starts_with('[') {
             continue;
         }
-        if !l.contains("libclient") {
+        let ml = mpath.to_lowercase();
+        if ml.contains("steamclient") || ml.contains("panorama") {
             continue;
         }
-        if l.contains("linuxsteamrt64") || l.contains("steamrt") && l.contains("libclient") {
-            return true;
+        if !ml.contains("libclient") {
+            continue;
         }
-        if l.contains("libclient.so")
-            && (l.contains("counter-strike")
-                || l.contains("csgo")
-                || l.contains("steamapps")
-                || l.contains("global offensive"))
-        {
-            return true;
+        if !ml.contains("linuxsteamrt64") {
+            continue;
         }
+        return true;
     }
     false
 }
@@ -162,25 +177,17 @@ fn collect_cs2_candidates(monitored: &[u32], display: u16) -> Vec<u32> {
     out
 }
 
-/// Сначала PID с libclient в maps (надёжно); иначе после ~20 итераций — max RSS (desktop поллит openModule).
-const CS2_PID_RSS_FALLBACK_AFTER_LOOP: u32 = 20;
-
-fn pick_best_cs2_pid(candidates: &[u32], loop_idx: u32) -> Option<u32> {
-    if candidates.is_empty() {
-        return None;
-    }
+/// Только PID, для которого Go `moduleImageBase` найдёт `linuxsteamrt64/.../libclient` (без RSS-fallback).
+fn pick_best_cs2_pid(candidates: &[u32]) -> Option<u32> {
     let with_so: Vec<u32> = candidates
         .iter()
         .copied()
-        .filter(|&p| maps_has_game_libclient(p))
+        .filter(|&p| maps_has_go_libclient_linuxsteamrt(p))
         .collect();
-    if !with_so.is_empty() {
-        return with_so.into_iter().max_by_key(|p| read_memory_kb(*p));
-    }
-    if loop_idx < CS2_PID_RSS_FALLBACK_AFTER_LOOP {
+    if with_so.is_empty() {
         return None;
     }
-    candidates.iter().copied().max_by_key(|p| read_memory_kb(*p))
+    with_so.into_iter().max_by_key(|p| read_memory_kb(*p))
 }
 
 pub async fn run(game_pid: Option<u32>, display: u16) {
@@ -234,7 +241,7 @@ pub async fn run(game_pid: Option<u32>, display: u16) {
             .collect();
 
         let cands = collect_cs2_candidates(&monitored, display);
-        let cs2_child = pick_best_cs2_pid(&cands, loop_idx);
+        let cs2_child = pick_best_cs2_pid(&cands);
 
         if cs2_child != last_cs2_emit {
             if let Some(cpid) = cs2_child {

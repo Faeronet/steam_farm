@@ -50,6 +50,9 @@ var espMissingWarnAt = make(map[int]time.Time)
 var noCS2PIDLogMu sync.Mutex
 var noCS2PIDLogAt = make(map[int]time.Time)
 
+var linuxMemModBaseFailMu sync.Mutex
+var linuxMemModBaseFailAt = make(map[int]time.Time)
+
 func logEspMissingOffsets(display int, keys []string) {
 	if len(keys) == 0 {
 		return
@@ -629,9 +632,19 @@ func tryStartLinuxMemDriver(display int, sandboxAccountID int64, off cs2MemoryJS
 		lastErr = err
 	}
 	if pid <= 0 || base == 0 {
-		log.Printf("[CS2Mem:%d] module base substr=%q: tried pids %v — last: %v — hint: /proc/<pid>/maps | grep -i libclient",
+		now := time.Now()
+		linuxMemModBaseFailMu.Lock()
+		if t, ok := linuxMemModBaseFailAt[display]; ok && now.Sub(t) < 12*time.Second {
+			linuxMemModBaseFailMu.Unlock()
+			return nil
+		}
+		linuxMemModBaseFailAt[display] = now
+		linuxMemModBaseFailMu.Unlock()
+		log.Printf("[CS2Mem:%d] module base substr=%q: tried pids %v — last: %v — hint: /proc/<pid>/maps | grep -i libclient (ждём PID с linuxsteamrt64/libclient из sandbox)",
 			display, off.ModuleSubstr, cands, lastErr)
-		logGrepHintMaps(cands[0], off.ModuleSubstr)
+		if len(cands) > 0 {
+			logGrepHintMaps(cands[0], off.ModuleSubstr)
+		}
 		return nil
 	}
 

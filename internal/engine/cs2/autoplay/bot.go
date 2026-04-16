@@ -759,7 +759,7 @@ func (b *CS2Bot) waitForCS2Process(ctx context.Context) bool {
 // Also monitors file growth to detect CS2 is alive even during long shader compilation.
 func (b *CS2Bot) waitForMainMenu(ctx context.Context) bool {
 	b.setPhase(PhaseWaitWindow)
-	log.Printf("[CS2Bot:%d] Phase 2: waiting for CS2 main menu (shaders may take minutes)...", b.display)
+	log.Printf("[CS2Bot:%d] Phase 2: waiting for CS2 main menu (shaders may take minutes); console.log=%s", b.display, cs2ConsolePath())
 
 	// Reset consoleLogStart to current file size so we only detect
 	// FRESH signals written after this bot run started.
@@ -1211,10 +1211,43 @@ func (b *CS2Bot) consoleLogSize() int64 {
 	return info.Size()
 }
 
+// Путь к console.log относительно корня Steam (.../.local/share/Steam).
+func cs2ConsoleRelativeSteam() string {
+	return filepath.Join("steamapps", "common", "Counter-Strike Global Offensive", "game", "csgo", "console.log")
+}
+
+// sfarm-desktop часто идёт от root, а CS2 пишет лог в $farmuser/snap/... — без этого Phase 2
+// вечно «no console activity» и бот не доходит до матчмейкинга.
 func cs2ConsolePath() string {
+	if p := strings.TrimSpace(os.Getenv("SFARM_CS2_CONSOLE_LOG")); p != "" {
+		return p
+	}
+	if root := strings.TrimSpace(os.Getenv("SFARM_STEAM_ROOT")); root != "" {
+		return filepath.Join(root, cs2ConsoleRelativeSteam())
+	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "snap/steam/common/.local/share/Steam/steamapps/common",
-		"Counter-Strike Global Offensive/game/csgo/console.log")
+	if home == "/root" {
+		glob := "/home/*/snap/steam/common/.local/share/Steam/steamapps/common/Counter-Strike Global Offensive/game/csgo/console.log"
+		if matches, err := filepath.Glob(glob); err == nil && len(matches) > 0 {
+			var best string
+			var bestM time.Time
+			for _, m := range matches {
+				if st, err := os.Stat(m); err == nil && !st.IsDir() {
+					if best == "" || st.ModTime().After(bestM) {
+						best, bestM = m, st.ModTime()
+					}
+				}
+			}
+			if best != "" {
+				return best
+			}
+		}
+		farm := filepath.Join("/home/steam-farm/snap/steam/common/.local/share/Steam", cs2ConsoleRelativeSteam())
+		if _, err := os.Stat(farm); err == nil {
+			return farm
+		}
+	}
+	return filepath.Join(home, "snap/steam/common/.local/share/Steam", cs2ConsoleRelativeSteam())
 }
 
 // checkConsoleLog reads new lines from the CS2 console log and returns

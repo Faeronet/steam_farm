@@ -575,6 +575,9 @@ func shouldLogMemErr(m *linuxCS2Mem, msg string, now time.Time) bool {
 var linuxSigScanDeferLogMu sync.Mutex
 var linuxSigScanDeferLogAt = map[int]time.Time{}
 
+var linuxMemPawnZeroLogMu sync.Mutex
+var linuxMemPawnZeroLogAt = map[int]time.Time{}
+
 func logSigScanDeferredThrottled(display int) {
 	now := time.Now()
 	linuxSigScanDeferLogMu.Lock()
@@ -631,15 +634,34 @@ func tryStartLinuxMemDriver(display int, off cs2MemoryJSON, sourceLabel string, 
 		if !strings.Contains(sourceLabel, "sigscan") {
 			sourceLabel += "+sigscan"
 		}
-		log.Printf("[CS2Mem:%d] sigscanner applied %d offsets: dwPawn=0x%x ent=0x%x ctrl=0x%x vm=0x%x ges=0x%x",
-			display, nApplied, off.DwLocalPlayerPawn, off.DwEntityList, off.DwLocalPlayerController,
-			off.DwViewMatrix, off.DwGameEntitySystem)
 	}
 
 	if off.DwLocalPlayerPawn == 0 {
-		log.Printf("[CS2Mem:%d] dw_local_player_pawn still 0 after sigscanner — offsets from %q; need manual libclient_offsets.json or updated patterns",
-			display, sourceLabel)
+		now := time.Now()
+		linuxMemPawnZeroLogMu.Lock()
+		throttle := false
+		if t, ok := linuxMemPawnZeroLogAt[display]; ok && now.Sub(t) < 25*time.Second {
+			throttle = true
+		} else {
+			linuxMemPawnZeroLogAt[display] = now
+		}
+		linuxMemPawnZeroLogMu.Unlock()
+		if !throttle {
+			if nApplied > 0 {
+				log.Printf("[CS2Mem:%d] sigscanner applied %d offsets: dwPawn=0x%x ent=0x%x ctrl=0x%x vm=0x%x ges=0x%x",
+					display, nApplied, off.DwLocalPlayerPawn, off.DwEntityList, off.DwLocalPlayerController,
+					off.DwViewMatrix, off.DwGameEntitySystem)
+			}
+			log.Printf("[CS2Mem:%d] dw_local_player_pawn still 0 after sigscanner — offsets from %q; update config/cs2_dumper (make cs2-offsets), libclient_offsets.json or sig patterns",
+				display, sourceLabel)
+		}
 		return nil
+	}
+
+	if nApplied > 0 {
+		log.Printf("[CS2Mem:%d] sigscanner applied %d offsets: dwPawn=0x%x ent=0x%x ctrl=0x%x vm=0x%x ges=0x%x",
+			display, nApplied, off.DwLocalPlayerPawn, off.DwEntityList, off.DwLocalPlayerController,
+			off.DwViewMatrix, off.DwGameEntitySystem)
 	}
 
 	m := &linuxCS2Mem{

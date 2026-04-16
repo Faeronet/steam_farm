@@ -858,6 +858,53 @@ while true; do sleep 60; done
             .collect::<Vec<_>>()
             .join(":");
 
+        let xauth_sandbox = sandbox_home.join(".Xauthority");
+        let steam_sh_path = self.steam_paths.root.join("steam.sh");
+
+        // Prefer steam.sh: it runs Valve's bootstrap (runtime, pins, steamclient.so). Launching
+        // ubuntu12_32/steam via ld-linux alone skips that and often crashes immediately on assert.
+        if steam_sh_path.is_file() {
+            eprintln!(
+                "[sandbox-{}] Launching Steam via steam.sh (direct, DISPLAY={})",
+                self.cfg.id, display
+            );
+            let mut cmd = Command::new(&steam_sh_path);
+            cmd.args(&steam_args)
+                .env("HOME", &sandbox_home)
+                .env("DISPLAY", &display)
+                .env("SFARM_DISPLAY", self.cfg.display.to_string())
+                .env("XDG_RUNTIME_DIR", &xdg_runtime)
+                .env("DBUS_SESSION_BUS_ADDRESS", "disabled")
+                .env("PATH", &new_path)
+                .env("REAL_HOME", std::env::var("HOME").unwrap_or_default())
+                .env("STEAMROOT", &self.steam_paths.root)
+                .env("LD_LIBRARY_PATH", &lib_path_str);
+            if xauth_sandbox.is_file() {
+                cmd.env("XAUTHORITY", xauth_sandbox.as_path());
+            } else {
+                cmd.env_remove("XAUTHORITY");
+            }
+            cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("Failed to start Steam (steam.sh): {}", e))?;
+
+            let id = self.cfg.id;
+            if let Some(stderr) = child.stderr.take() {
+                tokio::spawn(async move {
+                    let reader = BufReader::new(stderr);
+                    let mut lines = reader.lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        eprintln!("[steam-{}] {}", id, line);
+                    }
+                });
+            }
+
+            self.game = Some(child);
+            return Ok(());
+        }
+
         if let Some(ref ld_linux) = self.steam_paths.ld_linux_32 {
             let script_path = self.base.join("launch_steam.sh");
             let args_str = steam_args.iter()
@@ -879,10 +926,12 @@ while true; do sleep 60; done
                 std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
             }
 
-            eprintln!("[sandbox-{}] Launching Steam via ld-linux (fallback)", self.cfg.id);
+            eprintln!(
+                "[sandbox-{}] Launching Steam via ld-linux (no steam.sh; DISPLAY={})",
+                self.cfg.id, display
+            );
 
             let mut cmd = Command::new(script_path.display().to_string());
-            let xauth_d = sandbox_home.join(".Xauthority");
             cmd.env("HOME", &sandbox_home)
                 .env("DISPLAY", &display)
                 .env("SFARM_DISPLAY", self.cfg.display.to_string())
@@ -893,15 +942,16 @@ while true; do sleep 60; done
                 .env("LD_LIBRARY_PATH", &lib_path_str)
                 .env("STEAMROOT", &self.steam_paths.root)
                 .env("LIBGL_ALWAYS_SOFTWARE", "1");
-            if xauth_d.is_file() {
-                cmd.env("XAUTHORITY", xauth_d.as_path());
+            if xauth_sandbox.is_file() {
+                cmd.env("XAUTHORITY", xauth_sandbox.as_path());
             } else {
                 cmd.env_remove("XAUTHORITY");
             }
             cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
-            let mut child = cmd.spawn()
-                .map_err(|e| format!("Failed to start Steam: {}", e))?;
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("Failed to start Steam (ld-linux): {}", e))?;
 
             let id = self.cfg.id;
             if let Some(stderr) = child.stderr.take() {
@@ -918,30 +968,26 @@ while true; do sleep 60; done
             return Ok(());
         }
 
-        // Last resort: steam command
-        let steam_sh = self.steam_paths.root.join("steam.sh");
-        let steam_cmd = if steam_sh.exists() {
-            steam_sh.display().to_string()
-        } else {
-            "steam".to_string()
-        };
-
-        let mut cmd = Command::new(&steam_cmd);
-        cmd.args(&steam_args);
-        let xauth_lr = sandbox_home.join(".Xauthority");
-        cmd.env("HOME", &sandbox_home)
+        eprintln!(
+            "[sandbox-{}] Launching Steam via `steam` from PATH (no steam.sh, no ld-linux)",
+            self.cfg.id
+        );
+        let mut cmd = Command::new("steam");
+        cmd.args(&steam_args)
+            .env("HOME", &sandbox_home)
             .env("DISPLAY", &display)
             .env("SFARM_DISPLAY", self.cfg.display.to_string())
             .env("DBUS_SESSION_BUS_ADDRESS", "disabled")
             .env("PATH", &new_path);
-        if xauth_lr.is_file() {
-            cmd.env("XAUTHORITY", xauth_lr.as_path());
+        if xauth_sandbox.is_file() {
+            cmd.env("XAUTHORITY", xauth_sandbox.as_path());
         } else {
             cmd.env_remove("XAUTHORITY");
         }
         cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| format!("Failed to start Steam: {}", e))?;
 
         let id = self.cfg.id;

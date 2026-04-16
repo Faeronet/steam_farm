@@ -10,8 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"os/user"
 )
 
 type ContainerStats struct {
@@ -47,6 +50,49 @@ type IpcEvent struct {
 }
 
 const waitSandboxStarted = 3 * time.Minute
+
+// runuserPath: snap Steam из Ubuntu Software привязан к обычному пользователю; `snap run steam` от root
+// часто не поднимает клиент. При euid=0 запускаем sfarm-sandbox через runuser(1) от steam-farm (или SFARM_SANDBOX_USER).
+func runuserPath() string {
+	for _, p := range []string{"/usr/sbin/runuser", "/sbin/runuser"} {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	p, err := exec.LookPath("runuser")
+	if err == nil {
+		return p
+	}
+	return ""
+}
+
+// sandboxInvokerUser: если непустой — запускать `runuser -u name -- sfarm-sandbox ...` (только от euid=0).
+func sandboxInvokerUser() (string, bool) {
+	if os.Geteuid() != 0 {
+		return "", false
+	}
+	if v := strings.TrimSpace(os.Getenv("SFARM_SANDBOX_USER")); v != "" {
+		return v, true
+	}
+	if _, err := user.Lookup("steam-farm"); err == nil {
+		return "steam-farm", true
+	}
+	return "", false
+}
+
+func (n *NativeClient) commandSandbox(ctx context.Context, sandboxArgs ...string) *exec.Cmd {
+	u, use := sandboxInvokerUser()
+	runuser := runuserPath()
+	if use && runuser != "" {
+		log.Printf("[Sandbox] sfarm-sandbox via runuser -u %s (snap Steam из магазина — не от root); binary=%s", u, n.sandboxBin)
+		args := append([]string{"-u", u, "--", n.sandboxBin}, sandboxArgs...)
+		return exec.CommandContext(ctx, runuser, args...)
+	}
+	if use && runuser == "" {
+		log.Printf("[Sandbox] runuser not found — running sfarm-sandbox as root (snap Steam may fail); install util-linux")
+	}
+	return exec.CommandContext(ctx, n.sandboxBin, sandboxArgs...)
+}
 
 type NativeInstance struct {
 	ID       uint64
@@ -102,7 +148,7 @@ func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeIn
 	}
 
 	childCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(childCtx, n.sandboxBin, "launch", "--config", string(configJSON))
+	cmd := n.commandSandbox(childCtx, "launch", "--config", string(configJSON))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -212,7 +258,7 @@ func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeIn
 }
 
 func (n *NativeClient) Stop(id uint64) error {
-	cmd := exec.Command(n.sandboxBin, "stop", "--id", strconv.FormatUint(id, 10))
+	cmd := n.commandSandbox(context.Background(), "stop", "--id", strconv.FormatUint(id, 10))
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }

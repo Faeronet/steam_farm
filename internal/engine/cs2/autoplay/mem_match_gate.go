@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // SFARM_CS2_MEM_MATCH_GATE: когда не 0/off (по умолчанию включено), SFARM_CS2_MEM_DIAG,
@@ -41,7 +42,54 @@ func gsiActivityInWorld(g *GSIState) bool {
 	return act == ""
 }
 
-// gsiPawnControllable — персонаж в мире, можно двигаться: in-world activity, hp>0, не freezetime (если раунд в GSI есть).
+// gsiPlayableSide — боевая сторона T/CT; Spectator / прочее — не считаем «готов к автоплею».
+// Пустая Team: старый GSI без player_team — не отсекаем (иначе всегда false).
+func gsiPlayableSide(g *GSIState) bool {
+	if g == nil || g.Player == nil {
+		return false
+	}
+	t := strings.ToLower(strings.TrimSpace(g.normalizedTeam()))
+	if t == "" {
+		return true
+	}
+	switch t {
+	case "t", "ct", "terrorist", "counter-terrorist", "counterterrorist":
+		return true
+	default:
+		return false
+	}
+}
+
+// gsiHasExplicitPlayableTeam — в GSI явно пришла T/CT (удобно для таймингов без «угадывания»).
+func gsiHasExplicitPlayableTeam(g *GSIState) bool {
+	if g == nil || g.Player == nil {
+		return false
+	}
+	t := strings.ToLower(strings.TrimSpace(g.normalizedTeam()))
+	switch t {
+	case "t", "ct", "terrorist", "counter-terrorist", "counterterrorist":
+		return true
+	default:
+		return false
+	}
+}
+
+// spawnTeamSelectMinWait — после смены карты / входа в 5b console «round_start» часто раньше, чем UI выбора команды.
+// Пока в GSI нет явной T|CT, не завершаем ожидание раньше этого окна (Enter тогда уводит в зрители).
+const spawnTeamSelectMinWait = 2800 * time.Millisecond
+
+// spawnLoadoutTimingOK — можно считать спавн «подтверждённым» для автоплея (есть команда в GSI или прошла пауза).
+func spawnLoadoutTimingOK(phaseStart time.Time, g *GSIState) bool {
+	if gsiHasExplicitPlayableTeam(g) {
+		return true
+	}
+	if phaseStart.IsZero() {
+		return false
+	}
+	return time.Since(phaseStart) >= spawnTeamSelectMinWait
+}
+
+// gsiPawnControllable — персонаж в мире, можно двигаться: in-world activity, hp>0, не freezetime (если раунд в GSI есть), не зритель.
 func gsiPawnControllable(g *GSIState) bool {
 	if g == nil || g.Map == nil || g.Map.Name == "" {
 		return false
@@ -50,6 +98,9 @@ func gsiPawnControllable(g *GSIState) bool {
 		return false
 	}
 	if !gsiActivityInWorld(g) {
+		return false
+	}
+	if !gsiPlayableSide(g) {
 		return false
 	}
 	if g.Player.State.Health <= 0 {

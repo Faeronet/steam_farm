@@ -29,6 +29,8 @@ type GSIState struct {
 	Player *struct {
 		SteamID  string `json:"steamid"`
 		Activity string `json:"activity"` // "playing", "menu", "textinput"; в матче на сервере часто пусто
+		// Team: строка или число (enum) — см. (*GSIState).normalizedTeam(); нужен player_team в GSI cfg.
+		Team json.RawMessage `json:"team"`
 		// World position from GSI when cfg enables player_position ("x, y, z").
 		Position string `json:"position"`
 		State    *struct {
@@ -42,6 +44,35 @@ type GSIState struct {
 	Round *struct {
 		Phase string `json:"phase"` // "live", "freezetime", "over"
 	} `json:"round"`
+}
+
+// normalizedTeam — T/CT/Spectator/…; пусто если GSI не шлёт team или формат неизвестен.
+func (g *GSIState) normalizedTeam() string {
+	if g == nil || g.Player == nil {
+		return ""
+	}
+	raw := g.Player.Team
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		switch int(f) {
+		case 1:
+			return "Spectator"
+		case 2:
+			return "T"
+		case 3:
+			return "CT"
+		default:
+			return ""
+		}
+	}
+	return ""
 }
 
 type gsiAccountHandler struct {
@@ -307,6 +338,7 @@ func EnsureGSIConfig() error {
         "player_weapons"      "1"
         "player_match_stats"  "1"
         "player_position"     "1"
+        "player_team"         "1"
     }
 }
 `, GSIPort)

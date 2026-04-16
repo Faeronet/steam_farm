@@ -1048,6 +1048,7 @@ func (b *CS2Bot) waitForMatch(ctx context.Context) bool {
 func (b *CS2Bot) waitForPlayablePawn(ctx context.Context) bool {
 	b.setPhase(PhaseWaitMapLoad)
 	b.lastSpawnEnterAt = time.Now()
+	phaseEntered := time.Now()
 	log.Printf("[CS2Bot:%d] Phase 5b: load + team + controllable pawn (max 2m, radar scan logic after)...", b.display)
 
 	deadline := time.Now().Add(2 * time.Minute)
@@ -1060,16 +1061,20 @@ func (b *CS2Bot) waitForPlayablePawn(ctx context.Context) bool {
 			return false
 		case <-ticker.C:
 			sig := b.checkConsoleLog()
-			if sig == "spawned" || sig == "round_start" {
-				log.Printf("[CS2Bot:%d] Phase 5b: console %s — pawn ready", b.display, sig)
-				return true
-			}
 
 			b.mu.Lock()
 			g := b.lastGSI
 			b.mu.Unlock()
 
-			if gsiPawnControllable(g) {
+			// Console «spawned»/«round_start» часто раньше экрана выбора команды — только вместе с GSI + таймингом.
+			if sig == "spawned" || sig == "round_start" {
+				if gsiPawnControllable(g) && spawnLoadoutTimingOK(phaseEntered, g) {
+					log.Printf("[CS2Bot:%d] Phase 5b: console %s + GSI — pawn ready", b.display, sig)
+					return true
+				}
+			}
+
+			if gsiPawnControllable(g) && spawnLoadoutTimingOK(phaseEntered, g) {
 				rp := ""
 				if g.Round != nil {
 					rp = g.Round.Phase
@@ -1084,8 +1089,10 @@ func (b *CS2Bot) waitForPlayablePawn(ctx context.Context) bool {
 				return true
 			}
 
-			// Не спамим Enter — ломает выбор команды / наблюдатели. Только GSI/console; опционально редкий Enter: SFARM_CS2_SPAWN_ENTER_INTERVAL_MS
-			b.maybeDismissSpawnScreenEnter()
+			// Не спамим Enter — ломает выбор команды / наблюдатели. SFARM_CS2_SPAWN_ENTER_INTERVAL_MS — только после паузы/явной T|CT в GSI.
+			if spawnLoadoutTimingOK(phaseEntered, g) {
+				b.maybeDismissSpawnScreenEnter()
+			}
 		}
 	}
 }
@@ -1748,21 +1755,21 @@ const mapReloadMaxWait = 2 * time.Minute
 func (b *CS2Bot) tickMapReload(ctx context.Context) {
 	b.releaseAll()
 	sig := b.checkConsoleLog()
-	if sig == "spawned" || sig == "round_start" {
-		b.mu.Lock()
-		g := b.lastGSI
-		b.mu.Unlock()
-		log.Printf("[CS2Bot:%d] Map reload: console %s — completing", b.display, sig)
-		b.completeMapReload(ctx, g)
-		return
-	}
 
 	b.mu.Lock()
 	g := b.lastGSI
 	since := b.mapReloadSince
 	b.mu.Unlock()
 
-	if gsiPawnControllable(g) {
+	if sig == "spawned" || sig == "round_start" {
+		if gsiPawnControllable(g) && spawnLoadoutTimingOK(since, g) {
+			log.Printf("[CS2Bot:%d] Map reload: console %s + GSI — completing", b.display, sig)
+			b.completeMapReload(ctx, g)
+			return
+		}
+	}
+
+	if gsiPawnControllable(g) && spawnLoadoutTimingOK(since, g) {
 		b.completeMapReload(ctx, g)
 		return
 	}
@@ -1772,7 +1779,9 @@ func (b *CS2Bot) tickMapReload(ctx context.Context) {
 		b.completeMapReload(ctx, g)
 		return
 	}
-	b.maybeDismissSpawnScreenEnter()
+	if spawnLoadoutTimingOK(since, g) {
+		b.maybeDismissSpawnScreenEnter()
+	}
 }
 
 func (b *CS2Bot) completeMapReload(ctx context.Context, g *GSIState) {

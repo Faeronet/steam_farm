@@ -35,10 +35,11 @@ export default function VncViewer({ port, className, viewOnly = false, onStatusC
       rfb.viewOnly = viewOnly;
       rfb.scaleViewport = true;
       rfb.resizeSession = false;
-      rfb.showDotCursor = !viewOnly;
+      // Точка-курсор поверх кадра даёт лишние перерисовки на части браузеров.
+      rfb.showDotCursor = false;
       rfb.focusOnClick = true;
-      rfb.qualityLevel = 6;
-      rfb.compressionLevel = 2;
+      rfb.qualityLevel = 7;
+      rfb.compressionLevel = 1;
 
       rfb.addEventListener('connect', () => updateStatus('connected'));
       rfb.addEventListener('disconnect', () => {

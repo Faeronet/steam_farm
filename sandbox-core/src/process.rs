@@ -210,6 +210,8 @@ impl ProcessSupervisor {
         // Без -localhost x11vnc слушает все интерфейсы (норм для Docker -p и для 127.0.0.1 на хосте).
         // -noshm: при переполнении IPC /dev/shm x11vnc падает с «shmget: No space left on device»
         // (это лимит shm, не диск). Polling через XGetImage без MIT-SHM медленнее, но стабильнее.
+        // -noscr: без RECORD/scrollcopyrect — иначе на части хостов/клиентов VNC «мигает» и полосит экран.
+        // -defer: слегка сгладить поток прямоугольников (меньше белых вспышек при tight+медленной сети).
         let mut child = Command::new(&vnc_bin)
             .args([
                 "-display", &display,
@@ -217,6 +219,9 @@ impl ProcessSupervisor {
                 "-nopw", "-forever", "-shared",
                 "-noxdamage",
                 "-noshm",
+                "-noscr",
+                "-defer",
+                "15",
             ])
             .env_remove("LD_LIBRARY_PATH")
             .stdout(Stdio::null())

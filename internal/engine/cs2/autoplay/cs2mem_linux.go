@@ -700,7 +700,8 @@ func tryStartLinuxMemDriver(display int, sandboxAccountID int64, off cs2MemoryJS
 }
 
 // pidBelongsToSandboxAccount: HOME/.../sfarm-{id} в environ или maps (Steam передаёт; cs2 может без SFARM_DISPLAY).
-func pidBelongsToSandboxAccount(pid int, accountID int64) bool {
+// SFARM_DISPLAY в песочнице = номер X-дисплея (например 100), не accountID.
+func pidBelongsToSandboxAccount(pid int, accountID int64, display int) bool {
 	if accountID <= 0 {
 		return false
 	}
@@ -709,7 +710,8 @@ func pidBelongsToSandboxAccount(pid int, accountID int64) bool {
 		environPath := filepath.Join("/proc", strconv.Itoa(p), "environ")
 		data, err := os.ReadFile(environPath)
 		if err == nil {
-			if bytes.Contains(data, []byte(fmt.Sprintf("SFARM_DISPLAY=%d\x00", accountID))) || bytes.Contains(data, []byte(needle)) {
+			if display >= 0 && bytes.Contains(data, []byte(fmt.Sprintf("SFARM_DISPLAY=%d\x00", display))) ||
+				bytes.Contains(data, []byte(needle)) {
 				return true
 			}
 		}
@@ -1112,7 +1114,7 @@ func cs2PIDForDisplay(display int, sandboxAccountID int64) (int, bool) {
 			if err != nil || p <= 0 {
 				continue
 			}
-			if pidBelongsToSandboxAccount(p, sandboxAccountID) {
+			if pidBelongsToSandboxAccount(p, sandboxAccountID, display) {
 				return p, true
 			}
 		}

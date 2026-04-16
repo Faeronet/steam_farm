@@ -1536,7 +1536,7 @@ func isCS2RunningOnDisplay(display int, sandboxAccountID int64) bool {
 			if err != nil || pid <= 0 {
 				continue
 			}
-			if pidBelongsToSandboxAccount(pid, sandboxAccountID) {
+			if pidBelongsToSandboxAccount(pid, sandboxAccountID, display) {
 				return true
 			}
 		}

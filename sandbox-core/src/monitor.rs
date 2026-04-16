@@ -153,20 +153,18 @@ fn collect_cs2_candidates(monitored: &[u32], display: u16) -> Vec<u32> {
     out
 }
 
-/// Не «первый cs2 в дереве» (часто без libclient), а процесс с libclient в maps или с max RSS.
+/// Только PID, где в `/proc/.../maps` уже есть игровой libclient (не ранний cs2 без .so).
+/// Без fallback по RSS: иначе в IPC уходит лаунчер, desktop долбится в maps без libclient до таймаута.
 fn pick_best_cs2_pid(candidates: &[u32]) -> Option<u32> {
-    if candidates.is_empty() {
-        return None;
-    }
     let with_so: Vec<u32> = candidates
         .iter()
         .copied()
         .filter(|&p| maps_has_game_libclient(p))
         .collect();
-    if !with_so.is_empty() {
-        return with_so.into_iter().max_by_key(|p| read_memory_kb(*p));
+    if with_so.is_empty() {
+        return None;
     }
-    candidates.iter().copied().max_by_key(|p| read_memory_kb(*p))
+    with_so.into_iter().max_by_key(|p| read_memory_kb(*p))
 }
 
 pub async fn run(game_pid: Option<u32>, display: u16) {

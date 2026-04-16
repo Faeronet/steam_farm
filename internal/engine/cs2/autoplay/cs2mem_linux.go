@@ -1161,9 +1161,13 @@ func moduleImageBase(pid int, off cs2MemoryJSON) (base uint64, path string, err 
 		if needlePath != "" && !strings.Contains(mpath, needlePath) {
 			continue
 		}
-		// Только libclient игры CS2 (linuxsteamrt64), не прочие *client.so из игры.
+		// Только клиент CS2 под linuxsteamrt64 (путь Steam: .../game/bin/linuxsteamrt64/; старые билды — csgo/bin/).
 		if needlePath == "" && strings.Contains(sub, "libclient") {
-			if !strings.Contains(mpath, "csgo/bin/linuxsteamrt64") {
+			ml := strings.ToLower(mpath)
+			if !strings.Contains(ml, "linuxsteamrt64") {
+				continue
+			}
+			if !strings.Contains(ml, "/game/bin/linuxsteamrt64") && !strings.Contains(ml, "/csgo/bin/linuxsteamrt64") {
 				continue
 			}
 		}

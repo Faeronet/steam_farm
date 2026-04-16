@@ -708,21 +708,121 @@ func readProcPPid(pid int) int {
 	return -1
 }
 
-func environHasDisplay(pid int, display int) bool {
-	want := []byte(fmt.Sprintf("DISPLAY=:%d", display))
+// environMatchesDisplay: DISPLAY=:N, :N.0 и варианты с хостом (snap часто не кладёт :N в environ у дочерних процессов).
+func environMatchesDisplay(pid int, display int) bool {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "environ"))
 	if err != nil {
 		return false
 	}
-	return bytes.Contains(data, want)
+	if bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=:%d\x00", display))) ||
+		bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=:%d.0\x00", display))) {
+		return true
+	}
+	for _, part := range bytes.Split(data, []byte{0}) {
+		if !bytes.HasPrefix(part, []byte("DISPLAY=")) {
+			continue
+		}
+		val := string(bytes.TrimPrefix(part, []byte("DISPLAY=")))
+		if strings.HasPrefix(val, ":") {
+			var d int
+			if n, _ := fmt.Sscanf(val, ":%d", &d); n == 1 && d == display {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-// pidAssociatesWithDisplay: у cs2 часто нет DISPLAY в /proc/pid/environ — проверяем цепочку предков (Steam с тем же :N).
+var (
+	unixSockTableMu sync.Mutex
+	unixSockTable   map[uint64]string
+	unixSockTableAt time.Time
+)
+
+// inode -> путь сокета из /proc/net/unix (для readlink socket:[inode]).
+func loadUnixSocketInodeTable() map[uint64]string {
+	unixSockTableMu.Lock()
+	defer unixSockTableMu.Unlock()
+	if unixSockTable != nil && time.Since(unixSockTableAt) < 400*time.Millisecond {
+		return unixSockTable
+	}
+	out := make(map[uint64]string)
+	data, err := os.ReadFile("/proc/net/unix")
+	if err != nil {
+		unixSockTable = out
+		unixSockTableAt = time.Now()
+		return out
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		path := fields[len(fields)-1]
+		if !strings.Contains(path, ".X11-unix") {
+			continue
+		}
+		in, err := strconv.ParseUint(fields[len(fields)-2], 10, 64)
+		if err != nil {
+			continue
+		}
+		out[in] = path
+	}
+	unixSockTable = out
+	unixSockTableAt = time.Now()
+	return out
+}
+
+func pidUsesX11DisplaySocket(pid int, display int) bool {
+	if display < 0 {
+		return false
+	}
+	wantPath := fmt.Sprintf("/tmp/.X11-unix/X%d", display)
+	wantSuf := fmt.Sprintf("X%d", display)
+	fdDir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
+	entries, err := os.ReadDir(fdDir)
+	if err != nil {
+		return false
+	}
+	table := loadUnixSocketInodeTable()
+	for _, e := range entries {
+		link, err := os.Readlink(filepath.Join(fdDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		if link == wantPath || strings.HasSuffix(link, "/"+wantSuf) {
+			return true
+		}
+		var in uint64
+		if n, _ := fmt.Sscanf(link, "socket:[%d]", &in); n != 1 {
+			continue
+		}
+		if p, ok := table[in]; ok && (p == wantPath || strings.HasSuffix(p, "/"+wantSuf)) {
+			return true
+		}
+	}
+	return false
+}
+
+func procMatchesDisplay(pid int, display int) bool {
+	if display < 0 {
+		return true
+	}
+	if environMatchesDisplay(pid, display) {
+		return true
+	}
+	if pidUsesX11DisplaySocket(pid, display) {
+		return true
+	}
+	return false
+}
+
+// pidAssociatesWithDisplay: environ + X11 unix-сокет у процесса или предков (Steam/snap без DISPLAY в environ у cs2).
 func pidAssociatesWithDisplay(pid int, display int) bool {
 	if display < 0 {
 		return true
 	}
-	if environHasDisplay(pid, display) {
+	if procMatchesDisplay(pid, display) {
 		return true
 	}
 	seen := make(map[int]bool)
@@ -732,7 +832,7 @@ func pidAssociatesWithDisplay(pid int, display int) bool {
 			break
 		}
 		seen[p] = true
-		if environHasDisplay(p, display) {
+		if procMatchesDisplay(p, display) {
 			return true
 		}
 		p = readProcPPid(p)

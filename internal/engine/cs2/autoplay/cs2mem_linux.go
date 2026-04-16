@@ -47,12 +47,6 @@ func init() {
 var espMissingWarnMu sync.Mutex
 var espMissingWarnAt = make(map[int]time.Time)
 
-var noCS2PIDLogMu sync.Mutex
-var noCS2PIDLogAt = make(map[int]time.Time)
-
-var linuxMemModBaseFailMu sync.Mutex
-var linuxMemModBaseFailAt = make(map[int]time.Time)
-
 func logEspMissingOffsets(display int, keys []string) {
 	if len(keys) == 0 {
 		return
@@ -608,15 +602,7 @@ func tryStartLinuxMemDriver(display int, sandboxAccountID int64, off cs2MemoryJS
 	}
 	cands := cs2PIDCandidatesForDisplay(display, sandboxAccountID)
 	if len(cands) == 0 {
-		now := time.Now()
-		noCS2PIDLogMu.Lock()
-		if t, ok := noCS2PIDLogAt[display]; !ok || now.Sub(t) >= 12*time.Second {
-			noCS2PIDLogAt[display] = now
-			noCS2PIDLogMu.Unlock()
-			log.Printf("[CS2Mem:%d] no cs2 pid (DISPLAY=:%d match failed); set SFARM_CS2_PID or fix DISPLAY; ждём cs2_pid из sandbox после старта CS2", display, display)
-		} else {
-			noCS2PIDLogMu.Unlock()
-		}
+		log.Printf("[CS2Mem:%d] no cs2 pid (DISPLAY=:%d match failed); set SFARM_CS2_PID or fix DISPLAY on game process", display, display)
 		return nil
 	}
 	var pid int
@@ -632,19 +618,9 @@ func tryStartLinuxMemDriver(display int, sandboxAccountID int64, off cs2MemoryJS
 		lastErr = err
 	}
 	if pid <= 0 || base == 0 {
-		now := time.Now()
-		linuxMemModBaseFailMu.Lock()
-		if t, ok := linuxMemModBaseFailAt[display]; ok && now.Sub(t) < 12*time.Second {
-			linuxMemModBaseFailMu.Unlock()
-			return nil
-		}
-		linuxMemModBaseFailAt[display] = now
-		linuxMemModBaseFailMu.Unlock()
-		log.Printf("[CS2Mem:%d] module base substr=%q: tried pids %v — last: %v — hint: /proc/<pid>/maps | grep -i libclient (ждём PID с linuxsteamrt64/libclient из sandbox)",
+		log.Printf("[CS2Mem:%d] module base substr=%q: tried pids %v — last: %v — hint: /proc/<pid>/maps | grep -i libclient",
 			display, off.ModuleSubstr, cands, lastErr)
-		if len(cands) > 0 {
-			logGrepHintMaps(cands[0], off.ModuleSubstr)
-		}
+		logGrepHintMaps(cands[0], off.ModuleSubstr)
 		return nil
 	}
 
@@ -724,8 +700,7 @@ func tryStartLinuxMemDriver(display int, sandboxAccountID int64, off cs2MemoryJS
 }
 
 // pidBelongsToSandboxAccount: HOME/.../sfarm-{id} в environ или maps (Steam передаёт; cs2 может без SFARM_DISPLAY).
-// SFARM_DISPLAY в песочнице = номер X-дисплея (например 100), не accountID.
-func pidBelongsToSandboxAccount(pid int, accountID int64, display int) bool {
+func pidBelongsToSandboxAccount(pid int, accountID int64) bool {
 	if accountID <= 0 {
 		return false
 	}
@@ -734,8 +709,7 @@ func pidBelongsToSandboxAccount(pid int, accountID int64, display int) bool {
 		environPath := filepath.Join("/proc", strconv.Itoa(p), "environ")
 		data, err := os.ReadFile(environPath)
 		if err == nil {
-			if display >= 0 && bytes.Contains(data, []byte(fmt.Sprintf("SFARM_DISPLAY=%d\x00", display))) ||
-				bytes.Contains(data, []byte(needle)) {
+			if bytes.Contains(data, []byte(fmt.Sprintf("SFARM_DISPLAY=%d\x00", accountID))) || bytes.Contains(data, []byte(needle)) {
 				return true
 			}
 		}
@@ -1138,7 +1112,7 @@ func cs2PIDForDisplay(display int, sandboxAccountID int64) (int, bool) {
 			if err != nil || p <= 0 {
 				continue
 			}
-			if pidBelongsToSandboxAccount(p, sandboxAccountID, display) {
+			if pidBelongsToSandboxAccount(p, sandboxAccountID) {
 				return p, true
 			}
 		}

@@ -56,13 +56,19 @@ fn collect_descendant_pids(root: u32) -> Vec<u32> {
     result
 }
 
-/// comm==cs2 или путь linuxsteamrt64/cs2 в cmdline (snap может не класть потомка в дерево супервизора).
+/// comm==cs2, бинарь .../cs2, cmdline (snap/Steam могут репарентить вне дерева супервизора).
 fn is_cs2_process(pid: u32) -> bool {
     let Ok(comm) = fs::read_to_string(format!("/proc/{}/comm", pid)) else {
         return false;
     };
     if comm.trim() == "cs2" {
         return true;
+    }
+    if let Ok(link) = fs::read_link(format!("/proc/{}/exe", pid)) {
+        let p = link.to_string_lossy().to_lowercase();
+        if p.ends_with("/cs2") || p.contains("linuxsteamrt64/cs2") {
+            return true;
+        }
     }
     let Ok(cmd) = fs::read(format!("/proc/{}/cmdline", pid)) else {
         return false;
@@ -109,7 +115,7 @@ fn all_numeric_pids() -> Vec<u32> {
     out
 }
 
-/// В maps уже есть клиентская libclient (не ранний лаунчер без .so).
+/// В maps уже есть клиентская libclient (согласовано с Go moduleImageBase + запас под fuse/steamrt).
 fn maps_has_game_libclient(pid: u32) -> bool {
     let Ok(s) = fs::read_to_string(format!("/proc/{}/maps", pid)) else {
         return false;
@@ -122,11 +128,14 @@ fn maps_has_game_libclient(pid: u32) -> bool {
         if !l.contains("libclient") {
             continue;
         }
-        if l.contains("linuxsteamrt64") {
+        if l.contains("linuxsteamrt64") || l.contains("steamrt") && l.contains("libclient") {
             return true;
         }
         if l.contains("libclient.so")
-            && (l.contains("counter-strike") || l.contains("csgo") || l.contains("steamapps"))
+            && (l.contains("counter-strike")
+                || l.contains("csgo")
+                || l.contains("steamapps")
+                || l.contains("global offensive"))
         {
             return true;
         }
@@ -153,18 +162,25 @@ fn collect_cs2_candidates(monitored: &[u32], display: u16) -> Vec<u32> {
     out
 }
 
-/// Только PID, где в `/proc/.../maps` уже есть игровой libclient (не ранний cs2 без .so).
-/// Без fallback по RSS: иначе в IPC уходит лаунчер, desktop долбится в maps без libclient до таймаута.
-fn pick_best_cs2_pid(candidates: &[u32]) -> Option<u32> {
+/// Сначала PID с libclient в maps (надёжно); иначе после ~20 итераций — max RSS (desktop поллит openModule).
+const CS2_PID_RSS_FALLBACK_AFTER_LOOP: u32 = 20;
+
+fn pick_best_cs2_pid(candidates: &[u32], loop_idx: u32) -> Option<u32> {
+    if candidates.is_empty() {
+        return None;
+    }
     let with_so: Vec<u32> = candidates
         .iter()
         .copied()
         .filter(|&p| maps_has_game_libclient(p))
         .collect();
-    if with_so.is_empty() {
+    if !with_so.is_empty() {
+        return with_so.into_iter().max_by_key(|p| read_memory_kb(*p));
+    }
+    if loop_idx < CS2_PID_RSS_FALLBACK_AFTER_LOOP {
         return None;
     }
-    with_so.into_iter().max_by_key(|p| read_memory_kb(*p))
+    candidates.iter().copied().max_by_key(|p| read_memory_kb(*p))
 }
 
 pub async fn run(game_pid: Option<u32>, display: u16) {
@@ -218,7 +234,7 @@ pub async fn run(game_pid: Option<u32>, display: u16) {
             .collect();
 
         let cands = collect_cs2_candidates(&monitored, display);
-        let cs2_child = pick_best_cs2_pid(&cands);
+        let cs2_child = pick_best_cs2_pid(&cands, loop_idx);
 
         if cs2_child != last_cs2_emit {
             if let Some(cpid) = cs2_child {

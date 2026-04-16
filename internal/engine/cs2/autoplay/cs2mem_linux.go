@@ -47,6 +47,9 @@ func init() {
 var espMissingWarnMu sync.Mutex
 var espMissingWarnAt = make(map[int]time.Time)
 
+var noCS2PIDLogMu sync.Mutex
+var noCS2PIDLogAt = make(map[int]time.Time)
+
 func logEspMissingOffsets(display int, keys []string) {
 	if len(keys) == 0 {
 		return
@@ -602,7 +605,15 @@ func tryStartLinuxMemDriver(display int, sandboxAccountID int64, off cs2MemoryJS
 	}
 	cands := cs2PIDCandidatesForDisplay(display, sandboxAccountID)
 	if len(cands) == 0 {
-		log.Printf("[CS2Mem:%d] no cs2 pid (DISPLAY=:%d match failed); set SFARM_CS2_PID or fix DISPLAY on game process", display, display)
+		now := time.Now()
+		noCS2PIDLogMu.Lock()
+		if t, ok := noCS2PIDLogAt[display]; !ok || now.Sub(t) >= 12*time.Second {
+			noCS2PIDLogAt[display] = now
+			noCS2PIDLogMu.Unlock()
+			log.Printf("[CS2Mem:%d] no cs2 pid (DISPLAY=:%d match failed); set SFARM_CS2_PID or fix DISPLAY; ждём cs2_pid из sandbox после старта CS2", display, display)
+		} else {
+			noCS2PIDLogMu.Unlock()
+		}
 		return nil
 	}
 	var pid int

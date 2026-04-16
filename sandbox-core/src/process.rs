@@ -78,69 +78,6 @@ fn snap_steam_available() -> bool {
         .unwrap_or(false)
 }
 
-/// MIT-MAGIC-COOKIE для Xvfb: у snap Steam свой mount namespace, сокет в `/tmp/.X11-unix` часто недоступен,
-/// клиент идёт по TCP — libX11 ищет cookie для **имени**, с которым открыт дисплей (`localhost:N`, `127.0.0.1:N`),
-/// а не только для `:N`; иначе «Authorization required, but no authorization protocol specified».
-/// Один и тот же `mcookie` добавляем под несколькими именами; файл — в `sandbox_home/.Xauthority`.
-fn try_prepare_xauthority(base: &std::path::Path, display_num: u16, sandbox_id: u64) -> Option<PathBuf> {
-    let home = base.join("home");
-    if let Err(e) = std::fs::create_dir_all(&home) {
-        eprintln!(
-            "[sandbox-{}] create home for .Xauthority: {}",
-            sandbox_id, e
-        );
-        return None;
-    }
-    let auth = home.join(".Xauthority");
-    let n = display_num.to_string();
-    let status = std::process::Command::new("sh")
-        .env("SFARM_XAUTH", &auth)
-        .env("SFARM_DISP", &n)
-        .arg("-c")
-        .arg(
-            r#"set -e
-COOKIE="$(mcookie)"
-rm -f "$SFARM_XAUTH"
-touch "$SFARM_XAUTH"
-N="$SFARM_DISP"
-# Одна и та же копия MIT-MAGIC-COOKIE под разными ключами (unix vs TCP / разные имена хоста).
-for name in ":$N" "localhost:$N" "127.0.0.1:$N"; do
-  xauth -f "$SFARM_XAUTH" add "$name" MIT-MAGIC-COOKIE-1 "$COOKIE"
-done
-if H="$(hostname 2>/dev/null)"; [ -n "$H" ]; then
-  xauth -f "$SFARM_XAUTH" add "${H}:$N" MIT-MAGIC-COOKIE-1 "$COOKIE" 2>/dev/null || true
-fi
-if HF="$(hostname -f 2>/dev/null)"; [ -n "$HF" ] && [ "$HF" != "$(hostname 2>/dev/null)" ]; then
-  xauth -f "$SFARM_XAUTH" add "${HF}:$N" MIT-MAGIC-COOKIE-1 "$COOKIE" 2>/dev/null || true
-fi
-"#,
-        )
-        .status();
-    match status {
-        Ok(s) if s.success() => {
-            eprintln!(
-                "[sandbox-{}] X11 cookie for :{} (+localhost/TCP aliases; snap Steam)",
-                sandbox_id, n
-            );
-            Some(auth)
-        }
-        Ok(st) => {
-            eprintln!(
-                "[sandbox-{}] xauth failed (status={}); if Steam snap prints «Authorization required…», install: x11-xserver-utils (xauth), util-linux (mcookie)",
-                sandbox_id, st
-            );
-            None
-        }
-        Err(e) => {
-            eprintln!(
-                "[sandbox-{}] could not run xauth/mcookie ({}); continuing without -auth",
-                sandbox_id, e
-            );
-            None
-        }
-    }
-}
-
 pub struct ProcessSupervisor {
     cfg: LaunchConfig,
     base: PathBuf,
@@ -187,30 +124,21 @@ impl ProcessSupervisor {
                 .map_err(|e| format!("create /tmp/.X11-unix: {}", e))?;
         }
 
-        let xauth_path = try_prepare_xauthority(&self.base, self.cfg.display, self.cfg.id);
-
-        // -listen tcp: без TCP sfarm-desktop не подключится по 127.0.0.1:N.0, если unix-сокет недоступен
-        // (PrivateTmp, snap, разные mount namespace). Локально слушает порт 6000+display.
-        // -noreset: стабильнее при переподключениях клиентов.
-        // -auth: общий cookie с клиентами (snap Steam), иначе TCP-клиенты без MIT-cookie.
-        let mut xvfb_args: Vec<String> = vec![
-            display.clone(),
-            "-screen".into(),
-            "0".into(),
-            "1280x720x24".into(),
-            "-ac".into(),
-            "+extension".into(),
-            "GLX".into(),
-            "-listen".into(),
-            "tcp".into(),
-            "-noreset".into(),
+        // -listen tcp + -ac без -auth: snap Steam в своём namespace не видит unix-сокет в /tmp хоста и
+        // подключается по TCP; с -auth сервер требует MIT-cookie и даёт «Authorization required…», а cookie
+        // из файла в песочнице с snap не совпадает. -ac отключает контроль доступа — клиент без cookie.
+        let xvfb_args = [
+            display.as_str(),
+            "-screen",
+            "0",
+            "1280x720x24",
+            "-ac",
+            "+extension",
+            "GLX",
+            "-listen",
+            "tcp",
+            "-noreset",
         ];
-        if let Some(ref ap) = xauth_path {
-            if let Some(s) = ap.to_str() {
-                xvfb_args.insert(1, "-auth".into());
-                xvfb_args.insert(2, s.to_string());
-            }
-        }
 
         let mut child = Command::new(&xvfb_bin)
             .args(&xvfb_args)
@@ -287,9 +215,7 @@ impl ProcessSupervisor {
         // -noscr: без RECORD/scrollcopyrect — иначе на части хостов/клиентов VNC «мигает» и полосит экран.
         // -nowireframe/-nowcr: иначе wireframe + CopyRect — на noVNC часто мигание и артефакты.
         // -defer: слегка сгладить поток прямоугольников (меньше белых вспышек при tight+медленной сети).
-        let xauth_file = self.base.join("home/.Xauthority");
-        let mut vnc_cmd = Command::new(&vnc_bin);
-        vnc_cmd
+        let mut child = Command::new(&vnc_bin)
             .args([
                 "-display", &display,
                 "-rfbport", &port,
@@ -302,13 +228,8 @@ impl ProcessSupervisor {
                 "-defer",
                 "28",
             ])
-            .env_remove("LD_LIBRARY_PATH");
-        if xauth_file.is_file() {
-            vnc_cmd.env("XAUTHORITY", &xauth_file);
-        } else {
-            vnc_cmd.env_remove("XAUTHORITY");
-        }
-        let mut child = vnc_cmd
+            .env_remove("LD_LIBRARY_PATH")
+            .env_remove("XAUTHORITY")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -411,7 +332,6 @@ impl ProcessSupervisor {
     }
 
     async fn start_via_snap(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let display = format!(":{}", self.cfg.display);
         let steam_args = self.build_steam_args();
         let sandbox_home = &self.base.join("home");
 
@@ -428,6 +348,9 @@ impl ProcessSupervisor {
             .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
             .collect::<Vec<_>>()
             .join(" ");
+
+        // TCP: snap не видит unix-сокет Xvfb на хосте в /tmp; `127.0.0.1:N` → порт 6000+N. Вместе с Xvfb `-ac` без `-auth`.
+        let display_tcp = format!("127.0.0.1:{}", self.cfg.display);
 
         // steam_real/snap_common — из найденного Steam (find_steam), не из $HOME супервизора:
         // иначе при root + Steam у steam-farm путь был /root/snap/... и steam.sh не находился.
@@ -455,12 +378,10 @@ impl ProcessSupervisor {
 
         let inner_script = format!(
             r#"
-export DISPLAY='{display}'
-export SFARM_DISPLAY='{display_num}'
 export HOME='{snap_home}'
-# MIT-cookie для X (создаётся при старте Xvfb: xauth → $HOME/.Xauthority). У snap другой /tmp — клиент
-# часто идёт по TCP на 127.0.0.1:6000+N; без XAUTHORITY — «Authorization required, but no authorization protocol specified».
-export XAUTHORITY="$HOME/.Xauthority"
+export SFARM_DISPLAY='{display_num}'
+unset XAUTHORITY
+export DISPLAY='{display_tcp}'
 export STEAM_DISABLE_BROWSER_SANDBOX=1
 export CEF_DISABLE_SANDBOX=1
 export SDL_VIDEODRIVER=x11
@@ -693,7 +614,7 @@ wait $STEAM_PID 2>/dev/null
 # for the bot to use. Sleep until killed.
 while true; do sleep 60; done
 "#,
-            display = display,
+            display_tcp = display_tcp,
             display_num = self.cfg.display,
             snap_home = sandbox_home.display(),
             snap_common = snap_common,
@@ -705,24 +626,22 @@ while true; do sleep 60; done
             args = args_str,
         );
 
-        eprintln!("[sandbox-{}] Launching Steam via snap (display {})", self.cfg.id, display);
+        eprintln!(
+            "[sandbox-{}] Launching Steam via snap (DISPLAY={} unix :{})",
+            self.cfg.id, display_tcp, self.cfg.display
+        );
 
         let mut cmd = Command::new("snap");
         cmd.args(["run", "--shell", "steam", "-c", &inner_script]);
         let home = sandbox_home.display().to_string();
         let xdg_cfg = self.base.join("home/.config").display().to_string();
         let xdg_data = self.base.join("home/.local/share").display().to_string();
-        let xauth_abs = sandbox_home.join(".Xauthority");
         cmd.env("HOME", &home)
             .env("XDG_CONFIG_HOME", &xdg_cfg)
             .env("XDG_DATA_HOME", &xdg_data)
             .env("XDG_RUNTIME_DIR", self.base.join("xdg").display().to_string())
-            .env("SFARM_DISPLAY", self.cfg.display.to_string());
-        if xauth_abs.is_file() {
-            cmd.env("XAUTHORITY", xauth_abs.as_path());
-        } else {
-            cmd.env_remove("XAUTHORITY");
-        }
+            .env("SFARM_DISPLAY", self.cfg.display.to_string())
+            .env_remove("XAUTHORITY");
         cmd.stdout(Stdio::null())
             .stderr(Stdio::piped());
 
@@ -775,7 +694,7 @@ while true; do sleep 60; done
                 .join(" ");
 
             let script = format!(
-                "#!/bin/sh\nexport XAUTHORITY=\"$HOME/.Xauthority\"\nexport LD_LIBRARY_PATH='{lib}'\n'{ld}' --library-path '{lib}' '{bin}' {args}\n",
+                "#!/bin/sh\nunset XAUTHORITY\nexport LD_LIBRARY_PATH='{lib}'\n'{ld}' --library-path '{lib}' '{bin}' {args}\n",
                 ld = ld_linux.display(),
                 lib = lib_path_str,
                 bin = self.steam_paths.steam_binary.display(),
@@ -791,7 +710,6 @@ while true; do sleep 60; done
             eprintln!("[sandbox-{}] Launching Steam via ld-linux (fallback)", self.cfg.id);
 
             let mut cmd = Command::new(script_path.display().to_string());
-            let xauth_ld = sandbox_home.join(".Xauthority");
             cmd.env("HOME", &sandbox_home)
                 .env("DISPLAY", &display)
                 .env("SFARM_DISPLAY", self.cfg.display.to_string())
@@ -801,12 +719,8 @@ while true; do sleep 60; done
                 .env("REAL_HOME", std::env::var("HOME").unwrap_or_default())
                 .env("LD_LIBRARY_PATH", &lib_path_str)
                 .env("STEAMROOT", &self.steam_paths.root)
-                .env("LIBGL_ALWAYS_SOFTWARE", "1");
-            if xauth_ld.is_file() {
-                cmd.env("XAUTHORITY", xauth_ld.as_path());
-            } else {
-                cmd.env_remove("XAUTHORITY");
-            }
+                .env("LIBGL_ALWAYS_SOFTWARE", "1")
+                .env_remove("XAUTHORITY");
             cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
             let mut child = cmd.spawn()
@@ -837,17 +751,12 @@ while true; do sleep 60; done
 
         let mut cmd = Command::new(&steam_cmd);
         cmd.args(&steam_args);
-        let xauth_lr = sandbox_home.join(".Xauthority");
         cmd.env("HOME", &sandbox_home)
             .env("DISPLAY", &display)
             .env("SFARM_DISPLAY", self.cfg.display.to_string())
             .env("DBUS_SESSION_BUS_ADDRESS", "disabled")
-            .env("PATH", &new_path);
-        if xauth_lr.is_file() {
-            cmd.env("XAUTHORITY", xauth_lr.as_path());
-        } else {
-            cmd.env_remove("XAUTHORITY");
-        }
+            .env("PATH", &new_path)
+            .env_remove("XAUTHORITY");
         cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
         let mut child = cmd.spawn()

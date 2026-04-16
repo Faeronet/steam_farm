@@ -80,7 +80,7 @@ fn is_cs2_process(pid: u32) -> bool {
     lossy.contains("Counter-Strike Global Offensive") && lossy.contains("cs2")
 }
 
-/// Совпадает с Go environMatchesDisplay: SFARM_DISPLAY, DISPLAY=:N, DISPLAY=:N.0
+/// Совпадает с Go environMatchesDisplay: SFARM_DISPLAY, DISPLAY=:N, 127.0.0.1:N (snap Steam → TCP).
 fn environ_matches_display(pid: u32, display: u16) -> bool {
     let Ok(data) = fs::read(format!("/proc/{}/environ", pid)) else {
         return false;
@@ -89,6 +89,8 @@ fn environ_matches_display(pid: u32, display: u16) -> bool {
         format!("SFARM_DISPLAY={}\0", display),
         format!("DISPLAY=:{}\0", display),
         format!("DISPLAY=:{}.0\0", display),
+        format!("DISPLAY=127.0.0.1:{}\0", display),
+        format!("DISPLAY=localhost:{}\0", display),
     ] {
         let n = needle.as_bytes();
         if data.len() >= n.len() && data.windows(n.len()).any(|w| w == n) {

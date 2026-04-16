@@ -773,6 +773,11 @@ func environMatchesDisplay(pid int, display int) bool {
 		bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=:%d.0\x00", display))) {
 		return true
 	}
+	// Steam snap: DISPLAY=127.0.0.1:N (TCP к Xvfb на хосте).
+	if bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=127.0.0.1:%d\x00", display))) ||
+		bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=localhost:%d\x00", display))) {
+		return true
+	}
 	for _, part := range bytes.Split(data, []byte{0}) {
 		if !bytes.HasPrefix(part, []byte("DISPLAY=")) {
 			continue
@@ -783,6 +788,14 @@ func environMatchesDisplay(pid int, display int) bool {
 			if n, _ := fmt.Sscanf(val, ":%d", &d); n == 1 && d == display {
 				return true
 			}
+			continue
+		}
+		var d int
+		if n, _ := fmt.Sscanf(val, "127.0.0.1:%d", &d); n == 1 && d == display {
+			return true
+		}
+		if n, _ := fmt.Sscanf(val, "localhost:%d", &d); n == 1 && d == display {
+			return true
 		}
 	}
 	return false

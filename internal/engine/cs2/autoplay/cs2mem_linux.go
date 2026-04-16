@@ -805,11 +805,20 @@ func moduleImageBase(pid int, off cs2MemoryJSON) (base uint64, path string, err 
 		if strings.Contains(strings.ToLower(mpath), "steamclient") {
 			continue
 		}
+		if strings.Contains(strings.ToLower(mpath), "panorama") {
+			continue
+		}
 		if !strings.Contains(mpath, sub) {
 			continue
 		}
 		if needlePath != "" && !strings.Contains(mpath, needlePath) {
 			continue
+		}
+		// Только libclient игры CS2 (linuxsteamrt64), не прочие *client.so из игры.
+		if needlePath == "" && strings.Contains(sub, "libclient") {
+			if !strings.Contains(mpath, "csgo/bin/linuxsteamrt64") {
+				continue
+			}
 		}
 		if st < minAddr {
 			minAddr = st

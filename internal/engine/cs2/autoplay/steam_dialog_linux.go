@@ -46,6 +46,12 @@ func dismissSteamLikeDialogs(display int, lastRun *time.Time, force bool) {
 		"In Home Streaming",
 		"Someone is playing",
 		"Удалённая игра",
+		// «Сессия на другом устройстве» / Launching CS2
+		"another device",
+		"Another device",
+		"currently playing",
+		"Launching Counter-Strike",
+		"play here instead",
 		// Окна «ОК» / обрыв сессии / Steam
 		"Disconnected",
 		"Connection failed",

@@ -40,6 +40,25 @@ fn setup_dirs(cfg: &LaunchConfig, steam_paths: &steam::SteamPaths) -> Result<Pat
     fs::create_dir_all(base.join("home/.steam"))?;
     fs::create_dir_all(base.join("xdg"))?;
 
+    // steam.sh / snap вызывают grep к user-dirs.dirs и лезут в Desktop — без этого root/snap падает на 2-й песочнице.
+    fs::create_dir_all(base.join("home/.config"))?;
+    fs::write(
+        base.join("home/.config/user-dirs.dirs"),
+        r#"# Written by sfarm-sandbox
+XDG_DESKTOP_DIR="$HOME/Desktop"
+XDG_DOWNLOAD_DIR="$HOME/Downloads"
+XDG_TEMPLATES_DIR="$HOME/Templates"
+XDG_PUBLICSHARE_DIR="$HOME/Public"
+XDG_DOCUMENTS_DIR="$HOME/Documents"
+XDG_MUSIC_DIR="$HOME/Music"
+XDG_PICTURES_DIR="$HOME/Pictures"
+XDG_VIDEOS_DIR="$HOME/Videos"
+"#,
+    )?;
+    for d in ["Desktop", "Downloads", "Documents"] {
+        fs::create_dir_all(base.join("home").join(d))?;
+    }
+
     // Unique machine-id for HWID spoofing
     let machine_id = uuid::Uuid::new_v4().simple().to_string();
     fs::write(base.join("machine-id"), &machine_id)?;

@@ -458,6 +458,13 @@ while true; do sleep 60; done
 
         let mut cmd = Command::new("snap");
         cmd.args(["run", "--shell", "steam", "-c", &inner_script]);
+        let home = sandbox_home.display().to_string();
+        let xdg_cfg = self.base.join("home/.config").display().to_string();
+        let xdg_data = self.base.join("home/.local/share").display().to_string();
+        cmd.env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &xdg_cfg)
+            .env("XDG_DATA_HOME", &xdg_data)
+            .env("XDG_RUNTIME_DIR", self.base.join("xdg").display().to_string());
         cmd.stdout(Stdio::null())
             .stderr(Stdio::piped());
 

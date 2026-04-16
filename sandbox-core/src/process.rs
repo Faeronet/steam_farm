@@ -282,6 +282,7 @@ impl ProcessSupervisor {
         let inner_script = format!(
             r#"
 export DISPLAY='{display}'
+export SFARM_DISPLAY='{display_num}'
 export HOME='{snap_home}'
 export STEAM_DISABLE_BROWSER_SANDBOX=1
 export CEF_DISABLE_SANDBOX=1
@@ -448,6 +449,7 @@ wait $STEAM_PID 2>/dev/null
 while true; do sleep 60; done
 "#,
             display = display,
+            display_num = self.cfg.display,
             snap_home = sandbox_home.display(),
             snap_common = snap_common,
             steam_real = steam_real,
@@ -464,7 +466,8 @@ while true; do sleep 60; done
         cmd.env("HOME", &home)
             .env("XDG_CONFIG_HOME", &xdg_cfg)
             .env("XDG_DATA_HOME", &xdg_data)
-            .env("XDG_RUNTIME_DIR", self.base.join("xdg").display().to_string());
+            .env("XDG_RUNTIME_DIR", self.base.join("xdg").display().to_string())
+            .env("SFARM_DISPLAY", self.cfg.display.to_string());
         cmd.stdout(Stdio::null())
             .stderr(Stdio::piped());
 
@@ -527,6 +530,7 @@ while true; do sleep 60; done
             let mut cmd = Command::new(script_path.display().to_string());
             cmd.env("HOME", &sandbox_home)
                 .env("DISPLAY", &display)
+                .env("SFARM_DISPLAY", self.cfg.display.to_string())
                 .env("XDG_RUNTIME_DIR", &xdg_runtime)
                 .env("DBUS_SESSION_BUS_ADDRESS", "disabled")
                 .env("PATH", &new_path)
@@ -566,6 +570,7 @@ while true; do sleep 60; done
         cmd.args(&steam_args);
         cmd.env("HOME", &sandbox_home)
             .env("DISPLAY", &display)
+            .env("SFARM_DISPLAY", self.cfg.display.to_string())
             .env("DBUS_SESSION_BUS_ADDRESS", "disabled")
             .env("PATH", &new_path);
         cmd.stdout(Stdio::null()).stderr(Stdio::piped());

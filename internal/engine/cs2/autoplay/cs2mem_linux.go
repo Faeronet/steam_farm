@@ -708,11 +708,15 @@ func readProcPPid(pid int) int {
 	return -1
 }
 
-// environMatchesDisplay: DISPLAY=:N, :N.0 и варианты с хостом (snap часто не кладёт :N в environ у дочерних процессов).
+// environMatchesDisplay: SFARM_DISPLAY (песочница), DISPLAY=:N, :N.0 и варианты с хостом.
 func environMatchesDisplay(pid int, display int) bool {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "environ"))
 	if err != nil {
 		return false
+	}
+	// Номер X-дисплея без двоеточия (100, 101) — задаётся sandbox (process.rs) для всех потомков Steam.
+	if bytes.Contains(data, []byte(fmt.Sprintf("SFARM_DISPLAY=%d\x00", display))) {
+		return true
 	}
 	if bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=:%d\x00", display))) ||
 		bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=:%d.0\x00", display))) {
@@ -737,22 +741,18 @@ var (
 	unixSockTableMu sync.Mutex
 	unixSockTable   map[uint64]string
 	unixSockTableAt time.Time
+
+	unixPerPidMu    sync.Mutex
+	unixPerPidCache map[int]unixPerPidEntry
 )
 
-// inode -> путь сокета из /proc/net/unix (для readlink socket:[inode]).
-func loadUnixSocketInodeTable() map[uint64]string {
-	unixSockTableMu.Lock()
-	defer unixSockTableMu.Unlock()
-	if unixSockTable != nil && time.Since(unixSockTableAt) < 400*time.Millisecond {
-		return unixSockTable
-	}
+type unixPerPidEntry struct {
+	at time.Time
+	m  map[uint64]string
+}
+
+func parseProcNetUnixData(data []byte) map[uint64]string {
 	out := make(map[uint64]string)
-	data, err := os.ReadFile("/proc/net/unix")
-	if err != nil {
-		unixSockTable = out
-		unixSockTableAt = time.Now()
-		return out
-	}
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 8 {
@@ -768,9 +768,63 @@ func loadUnixSocketInodeTable() map[uint64]string {
 		}
 		out[in] = path
 	}
+	return out
+}
+
+// inode -> путь сокета из /proc/net/unix (хост).
+func loadUnixSocketInodeTable() map[uint64]string {
+	unixSockTableMu.Lock()
+	defer unixSockTableMu.Unlock()
+	if unixSockTable != nil && time.Since(unixSockTableAt) < 400*time.Millisecond {
+		return unixSockTable
+	}
+	out := make(map[uint64]string)
+	data, err := os.ReadFile("/proc/net/unix")
+	if err != nil {
+		unixSockTable = out
+		unixSockTableAt = time.Now()
+		return out
+	}
+	out = parseProcNetUnixData(data)
 	unixSockTable = out
 	unixSockTableAt = time.Now()
 	return out
+}
+
+// Таблица unix-сокетов в network namespace процесса (иначе inode из /proc/net/unix хоста не совпадает).
+func unixInodeTableForProcess(pid int) map[uint64]string {
+	unixPerPidMu.Lock()
+	defer unixPerPidMu.Unlock()
+	if unixPerPidCache != nil {
+		if ent, ok := unixPerPidCache[pid]; ok && time.Since(ent.at) < 400*time.Millisecond && ent.m != nil {
+			return ent.m
+		}
+	} else {
+		unixPerPidCache = make(map[int]unixPerPidEntry)
+	}
+	path := filepath.Join("/proc", strconv.Itoa(pid), "net/unix")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		unixPerPidCache[pid] = unixPerPidEntry{at: time.Now(), m: nil}
+		return nil
+	}
+	m := parseProcNetUnixData(data)
+	unixPerPidCache[pid] = unixPerPidEntry{at: time.Now(), m: m}
+	return m
+}
+
+func unixPathForInode(pid int, inode uint64) (string, bool) {
+	if m := unixInodeTableForProcess(pid); m != nil {
+		if p, ok := m[inode]; ok {
+			return p, true
+		}
+	}
+	if m := loadUnixSocketInodeTable(); m != nil {
+		if p, ok := m[inode]; ok {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 func pidUsesX11DisplaySocket(pid int, display int) bool {
@@ -784,7 +838,6 @@ func pidUsesX11DisplaySocket(pid int, display int) bool {
 	if err != nil {
 		return false
 	}
-	table := loadUnixSocketInodeTable()
 	for _, e := range entries {
 		link, err := os.Readlink(filepath.Join(fdDir, e.Name()))
 		if err != nil {
@@ -797,7 +850,7 @@ func pidUsesX11DisplaySocket(pid int, display int) bool {
 		if n, _ := fmt.Sscanf(link, "socket:[%d]", &in); n != 1 {
 			continue
 		}
-		if p, ok := table[in]; ok && (p == wantPath || strings.HasSuffix(p, "/"+wantSuf) || strings.Contains(p, ".X11-unix/"+wantSuf)) {
+		if p, ok := unixPathForInode(pid, in); ok && (p == wantPath || strings.HasSuffix(p, "/"+wantSuf) || strings.Contains(p, ".X11-unix/"+wantSuf)) {
 			return true
 		}
 	}
@@ -837,6 +890,26 @@ func parseProcNetTCPInode(fields []string) (uint64, bool) {
 	return 0, false
 }
 
+// Адрес:порт в /proc/net/tcp* — порт в hex; loopback IPv4/IPv6 и ::ffff:127.0.0.1.
+func procNetTCPAddrIsLoopback(addrPort string) bool {
+	i := strings.LastIndex(addrPort, ":")
+	if i < 0 {
+		return false
+	}
+	ipHex := addrPort[:i]
+	switch {
+	case ipHex == "0100007F":
+		return true
+	case ipHex == "00000000000000000000000000000001":
+		return true
+	case len(ipHex) == 32 && strings.HasPrefix(ipHex, "0000000000000000FFFF") && strings.HasSuffix(ipHex, "00000100007F"):
+		// ::ffff:127.0.0.1
+		return true
+	default:
+		return false
+	}
+}
+
 // inodes TCP-сокетов с удалённым 127.0.0.1:(6000+display) или ::1:(6000+display) в namespace процесса.
 func tcpInodesLocalhostX11Port(pid int, wantPort uint16) map[uint64]struct{} {
 	if wantPort == 0 {
@@ -871,12 +944,13 @@ func tcpInodesLocalhostX11Port(pid int, wantPort uint16) map[uint64]struct{} {
 				continue
 			}
 			rem := f[2]
-			if !strings.HasSuffix(rem, ":"+wantHex) {
+			loc := f[1]
+			if strings.HasSuffix(rem, ":"+wantHex) && procNetTCPAddrIsLoopback(rem) {
+				out[inode] = struct{}{}
 				continue
 			}
-			// Клиент X к 127.0.0.1:N или ::1:N (tcp / tcp6).
-			if strings.HasPrefix(rem, "0100007F:") ||
-				strings.HasPrefix(rem, "00000000000000000000000000000001:") {
+			// Редко: локальный конец на loopback с нужным портом (тот же X).
+			if strings.HasSuffix(loc, ":"+wantHex) && procNetTCPAddrIsLoopback(loc) {
 				out[inode] = struct{}{}
 			}
 		}

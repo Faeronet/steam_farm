@@ -109,22 +109,64 @@ fn all_numeric_pids() -> Vec<u32> {
     out
 }
 
-/// Сначала дерево супервизора/Steam; если cs2 не в дереве (snap/reparent) — весь хост с фильтром DISPLAY.
-fn find_cs2_pid(monitored: &[u32], display: u16) -> Option<u32> {
+/// В maps уже есть клиентская libclient (не ранний лаунчер без .so).
+fn maps_has_game_libclient(pid: u32) -> bool {
+    let Ok(s) = fs::read_to_string(format!("/proc/{}/maps", pid)) else {
+        return false;
+    };
+    for line in s.lines() {
+        let l = line.to_lowercase();
+        if l.contains("steamclient") || l.contains("panorama") {
+            continue;
+        }
+        if !l.contains("libclient") {
+            continue;
+        }
+        if l.contains("linuxsteamrt64") {
+            return true;
+        }
+        if l.contains("libclient.so")
+            && (l.contains("counter-strike") || l.contains("csgo") || l.contains("steamapps"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn collect_cs2_candidates(monitored: &[u32], display: u16) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for &p in monitored {
-        if is_cs2_process(p) {
-            return Some(p);
+        if is_cs2_process(p) && seen.insert(p) {
+            out.push(p);
         }
     }
     for p in all_numeric_pids() {
-        if monitored.contains(&p) {
+        if seen.contains(&p) {
             continue;
         }
-        if is_cs2_process(p) && environ_matches_display(p, display) {
-            return Some(p);
+        if is_cs2_process(p) && environ_matches_display(p, display) && seen.insert(p) {
+            out.push(p);
         }
     }
-    None
+    out
+}
+
+/// Не «первый cs2 в дереве» (часто без libclient), а процесс с libclient в maps или с max RSS.
+fn pick_best_cs2_pid(candidates: &[u32]) -> Option<u32> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let with_so: Vec<u32> = candidates
+        .iter()
+        .copied()
+        .filter(|&p| maps_has_game_libclient(p))
+        .collect();
+    if !with_so.is_empty() {
+        return with_so.into_iter().max_by_key(|p| read_memory_kb(*p));
+    }
+    candidates.iter().copied().max_by_key(|p| read_memory_kb(*p))
 }
 
 pub async fn run(game_pid: Option<u32>, display: u16) {
@@ -151,8 +193,10 @@ pub async fn run(game_pid: Option<u32>, display: u16) {
     let mut loop_idx: u32 = 0;
 
     loop {
-        // Первые ~2 мин чаще — чтобы cs2_pid дошёл до desktop до grace Phase 1.
-        let delay = if loop_idx < 120 {
+        // Первая итерация почти сразу; дальше чаще — чтобы перейти на PID с libclient.so в maps.
+        let delay = if loop_idx == 0 {
+            Duration::from_millis(300)
+        } else if loop_idx < 120 {
             Duration::from_secs(1)
         } else {
             Duration::from_secs(5)
@@ -175,7 +219,8 @@ pub async fn run(game_pid: Option<u32>, display: u16) {
             .filter(|&p| p != supervisor_pid)
             .collect();
 
-        let cs2_child = find_cs2_pid(&monitored, display);
+        let cands = collect_cs2_candidates(&monitored, display);
+        let cs2_child = pick_best_cs2_pid(&cands);
 
         if cs2_child != last_cs2_emit {
             if let Some(cpid) = cs2_child {

@@ -80,18 +80,43 @@ func sandboxInvokerUser() (string, bool) {
 	return "", false
 }
 
+// envForSandboxCmd: runuser(1) часто даёт урезанный PATH — не находятся Xvfb, x11vnc, snap.
+func envForSandboxCmd() []string {
+	prefix := "/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	path := os.Getenv("PATH")
+	if path != "" {
+		path = prefix + ":" + path
+	} else {
+		path = prefix
+	}
+	env := os.Environ()
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	out = append(out, "PATH="+path)
+	return out
+}
+
 func (n *NativeClient) commandSandbox(ctx context.Context, sandboxArgs ...string) *exec.Cmd {
 	u, use := sandboxInvokerUser()
 	runuser := runuserPath()
+	var cmd *exec.Cmd
 	if use && runuser != "" {
 		log.Printf("[Sandbox] sfarm-sandbox via runuser -u %s (snap Steam из магазина — не от root); binary=%s", u, n.sandboxBin)
 		args := append([]string{"-u", u, "--", n.sandboxBin}, sandboxArgs...)
-		return exec.CommandContext(ctx, runuser, args...)
+		cmd = exec.CommandContext(ctx, runuser, args...)
+	} else {
+		if use && runuser == "" {
+			log.Printf("[Sandbox] runuser not found — running sfarm-sandbox as root (snap Steam may fail); install util-linux")
+		}
+		cmd = exec.CommandContext(ctx, n.sandboxBin, sandboxArgs...)
 	}
-	if use && runuser == "" {
-		log.Printf("[Sandbox] runuser not found — running sfarm-sandbox as root (snap Steam may fail); install util-linux")
-	}
-	return exec.CommandContext(ctx, n.sandboxBin, sandboxArgs...)
+	cmd.Env = envForSandboxCmd()
+	return cmd
 }
 
 type NativeInstance struct {
@@ -176,6 +201,17 @@ func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeIn
 		exited: exitedCh,
 	}
 
+	var stderrMu sync.Mutex
+	stderrTail := make([]string, 0, 64)
+	pushStderr := func(line string) {
+		stderrMu.Lock()
+		stderrTail = append(stderrTail, line)
+		if len(stderrTail) > 48 {
+			stderrTail = stderrTail[len(stderrTail)-48:]
+		}
+		stderrMu.Unlock()
+	}
+
 	// Read IPC JSON events from stdout
 	go func() {
 		scanner := bufio.NewScanner(stdout)
@@ -212,7 +248,9 @@ func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeIn
 		scanner := bufio.NewScanner(stderr)
 		scanner.Buffer(make([]byte, 64*1024), 64*1024)
 		for scanner.Scan() {
-			log.Printf("[Sandbox-%d] %s", cfg.ID, scanner.Text())
+			line := scanner.Text()
+			pushStderr(line)
+			log.Printf("[Sandbox-%d] %s", cfg.ID, line)
 		}
 	}()
 
@@ -228,7 +266,15 @@ func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeIn
 	case ev, ok := <-inst.events:
 		if !ok {
 			cancel()
-			return nil, fmt.Errorf("sandbox process exited before X11 was ready")
+			time.Sleep(200 * time.Millisecond)
+			stderrMu.Lock()
+			tail := append([]string(nil), stderrTail...)
+			stderrMu.Unlock()
+			hint := strings.Join(tail, "\n")
+			if strings.TrimSpace(hint) == "" {
+				hint = "(stderr пуст; часто: Permission denied на sfarm-sandbox для steam-farm — chmod o+rx по пути к bin или вынесите в /opt; либо SFARM_SANDBOX_USER)"
+			}
+			return nil, fmt.Errorf("sandbox process exited before X11 was ready: %s", hint)
 		}
 		switch ev.Event {
 		case "started":
@@ -250,6 +296,13 @@ func (n *NativeClient) Launch(ctx context.Context, cfg SandboxConfig) (*NativeIn
 		cancel()
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
+		}
+		time.Sleep(200 * time.Millisecond)
+		stderrMu.Lock()
+		tail := strings.Join(stderrTail, "\n")
+		stderrMu.Unlock()
+		if strings.TrimSpace(tail) != "" {
+			return nil, fmt.Errorf("timeout waiting for sandbox started (X11/VNC); stderr: %s", tail)
 		}
 		return nil, fmt.Errorf("timeout waiting for sandbox started (X11/VNC); check sfarm-sandbox logs and Xvfb")
 	}

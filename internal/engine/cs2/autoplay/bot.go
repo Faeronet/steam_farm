@@ -1250,6 +1250,11 @@ func cs2ConsolePath() string {
 	return filepath.Join(home, "snap/steam/common/.local/share/Steam", cs2ConsoleRelativeSteam())
 }
 
+// cs2CfgDir — каталог cfg (gamestate_integration_*.cfg); тот же резолв корня Steam, что и console.log.
+func cs2CfgDir() string {
+	return filepath.Join(filepath.Dir(cs2ConsolePath()), "cfg")
+}
+
 // checkConsoleLog reads new lines from the CS2 console log and returns
 // the most significant game-state signal found (empty if none).
 // Signals in priority order: "spawned", "round_start", "map_loaded", "connected".

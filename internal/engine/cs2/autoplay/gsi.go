@@ -147,17 +147,11 @@ func (gs *GSIServer) handlePost(w http.ResponseWriter, r *http.Request) {
 // EnsureGSIConfig creates the GSI config file in the CS2 cfg directory.
 // Since all sandboxes share the same steamapps via symlink, this only needs
 // to be done once. The config tells CS2 to POST game state to our listener.
+// Путь как у console.log (cs2CfgDir) — при запуске sfarm от root не использовать только /root/snap/...
 func EnsureGSIConfig() error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-
-	cfgDir := filepath.Join(home, "snap/steam/common/.local/share/Steam/steamapps/common",
-		"Counter-Strike Global Offensive/game/csgo/cfg")
-
-	if _, err := os.Stat(cfgDir); os.IsNotExist(err) {
-		return fmt.Errorf("CS2 cfg directory not found: %s", cfgDir)
+	cfgDir := cs2CfgDir()
+	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+		return fmt.Errorf("CS2 cfg directory: %w", err)
 	}
 
 	cfgPath := filepath.Join(cfgDir, "gamestate_integration_sfarm.cfg")

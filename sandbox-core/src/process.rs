@@ -171,6 +171,39 @@ done
     }
 }
 
+/// Запись для `xauth nmerge` внутри snap (хостовый `.Xauthority` процессу snap часто недоступен для чтения).
+fn xauth_nlist_for_merge(auth: &std::path::Path) -> Option<String> {
+    let p = auth.to_str()?;
+    let o = std::process::Command::new("xauth")
+        .args(["-f", p, "nlist"])
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&o.stdout).into_owned();
+    if s.trim().is_empty() {
+        return None;
+    }
+    Some(s)
+}
+
+fn steam_snap_disabled_by_env() -> bool {
+    if let Ok(s) = std::env::var("SFARM_STEAM_NO_SNAP") {
+        let t = s.to_lowercase();
+        if matches!(t.as_str(), "1" | "true" | "yes") {
+            return true;
+        }
+    }
+    if let Ok(s) = std::env::var("SFARM_USE_STEAM_SNAP") {
+        let t = s.to_lowercase();
+        if matches!(t.as_str(), "0" | "false" | "no") {
+            return true;
+        }
+    }
+    false
+}
+
 pub struct ProcessSupervisor {
     cfg: LaunchConfig,
     base: PathBuf,
@@ -433,9 +466,15 @@ impl ProcessSupervisor {
     }
 
     pub async fn start_game(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if snap_steam_available() {
+        if snap_steam_available() && !steam_snap_disabled_by_env() {
             self.start_via_snap().await
         } else {
+            if snap_steam_available() && steam_snap_disabled_by_env() {
+                eprintln!(
+                    "[sandbox-{}] SFARM_STEAM_NO_SNAP=1 — Steam без snap, DISPLAY=unix :{} (обход изоляции snap + X11)",
+                    self.cfg.id, self.cfg.display
+                );
+            }
             self.start_via_direct().await
         }
     }
@@ -486,14 +525,35 @@ impl ProcessSupervisor {
         let try_fuse_cs2_overlay = self.cfg.game == "cs2";
         let common_folder = steam::steamapps_common_folder_name(&self.cfg.game).unwrap_or("");
 
-        // Shell script inside snap: DISPLAY=<LAN или SFARM_X11_HOST>:N (TCP на Xvfb хоста; 127.0.0.1 в snap ≠ хост).
+        let auth_path = sandbox_home.join(".Xauthority");
+        let xauth_merge_block = if let Some(nlist) = xauth_nlist_for_merge(&auth_path) {
+            eprintln!(
+                "[sandbox-{}] snap: встроен xauth nmerge (хостовый .Xauthority из confinement может не читаться)",
+                self.cfg.id
+            );
+            format!(
+                r#"if command -v xauth >/dev/null 2>&1; then
+  touch "$HOME/.Xauthority"
+  xauth -f "$HOME/.Xauthority" nmerge <<'SFARMAUTHIN'
+{}
+SFARMAUTHIN
+fi
+"#,
+                nlist.trim_end()
+            )
+        } else {
+            String::new()
+        };
+
+        // Shell: DISPLAY=LAN:N (TCP); cookie через nmerge внутри snap + XAUTHORITY на $HOME/.Xauthority.
 
         let inner_script = format!(
             r#"
 export HOME='{snap_home}'
+{xauth_merge_block}
 export SFARM_DISPLAY='{display_num}'
 export DISPLAY='{display_tcp}'
-if [ -f "$HOME/.Xauthority" ]; then export XAUTHORITY="$HOME/.Xauthority"; fi
+export XAUTHORITY="$HOME/.Xauthority"
 export STEAM_DISABLE_BROWSER_SANDBOX=1
 export CEF_DISABLE_SANDBOX=1
 export SDL_VIDEODRIVER=x11
@@ -726,6 +786,7 @@ wait $STEAM_PID 2>/dev/null
 # for the bot to use. Sleep until killed.
 while true; do sleep 60; done
 "#,
+            xauth_merge_block = xauth_merge_block,
             display_tcp = display_tcp,
             display_num = self.cfg.display,
             snap_home = sandbox_home.display(),

@@ -861,34 +861,66 @@ while true; do sleep 60; done
         let xauth_sandbox = sandbox_home.join(".Xauthority");
         let steam_sh_path = self.steam_paths.root.join("steam.sh");
 
-        // Prefer steam.sh: it runs Valve's bootstrap (runtime, pins, steamclient.so). Launching
-        // ubuntu12_32/steam via ld-linux alone skips that and often crashes immediately on assert.
+        // Prefer steam.sh: Valve bootstrap (runtime, pins). Do not spawn steam.sh as the supervised
+        // child directly — it often forks the real client and exits with 0, which ends the sandbox
+        // and tears down Xvfb/VNC. Same pattern as snap inner script: wait steam.sh then sleep loop.
         if steam_sh_path.is_file() {
+            let sh_quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+            let wrapper_path = self.base.join("steam_sh_wrapper.sh");
+            let real_home = std::env::var("HOME").unwrap_or_default();
+            let steam_sh_q = sh_quote(&steam_sh_path.display().to_string());
+            let args_str = steam_args
+                .iter()
+                .map(|a| sh_quote(a))
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let wrapper_src = format!(
+                "#!/bin/sh\n\
+export HOME={}\n\
+export DISPLAY={}\n\
+export SFARM_DISPLAY={}\n\
+export XDG_RUNTIME_DIR={}\n\
+export DBUS_SESSION_BUS_ADDRESS=disabled\n\
+export PATH={}\n\
+export REAL_HOME={}\n\
+export STEAMROOT={}\n\
+export LD_LIBRARY_PATH={}\n\
+if [ -f \"$HOME/.Xauthority\" ]; then export XAUTHORITY=\"$HOME/.Xauthority\"; fi\n\
+{} {} &\n\
+SPID=$!\n\
+wait $SPID 2>/dev/null || true\n\
+while true; do sleep 60; done\n",
+                sh_quote(&sandbox_home.display().to_string()),
+                sh_quote(&display),
+                sh_quote(&self.cfg.display.to_string()),
+                sh_quote(&xdg_runtime.display().to_string()),
+                sh_quote(&new_path),
+                sh_quote(&real_home),
+                sh_quote(&self.steam_paths.root.display().to_string()),
+                sh_quote(&lib_path_str),
+                steam_sh_q,
+                args_str,
+            );
+            std::fs::write(&wrapper_path, wrapper_src)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
+            }
+
             eprintln!(
-                "[sandbox-{}] Launching Steam via steam.sh (direct, DISPLAY={})",
+                "[sandbox-{}] Launching Steam via steam.sh wrapper (DISPLAY={})",
                 self.cfg.id, display
             );
-            let mut cmd = Command::new(&steam_sh_path);
-            cmd.args(&steam_args)
-                .env("HOME", &sandbox_home)
-                .env("DISPLAY", &display)
-                .env("SFARM_DISPLAY", self.cfg.display.to_string())
-                .env("XDG_RUNTIME_DIR", &xdg_runtime)
-                .env("DBUS_SESSION_BUS_ADDRESS", "disabled")
-                .env("PATH", &new_path)
-                .env("REAL_HOME", std::env::var("HOME").unwrap_or_default())
-                .env("STEAMROOT", &self.steam_paths.root)
-                .env("LD_LIBRARY_PATH", &lib_path_str);
-            if xauth_sandbox.is_file() {
-                cmd.env("XAUTHORITY", xauth_sandbox.as_path());
-            } else {
-                cmd.env_remove("XAUTHORITY");
-            }
+
+            let mut cmd = Command::new("/bin/sh");
+            cmd.arg(&wrapper_path);
             cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
             let mut child = cmd
                 .spawn()
-                .map_err(|e| format!("Failed to start Steam (steam.sh): {}", e))?;
+                .map_err(|e| format!("Failed to start Steam (steam.sh wrapper): {}", e))?;
 
             let id = self.cfg.id;
             if let Some(stderr) = child.stderr.take() {

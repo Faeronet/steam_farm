@@ -73,3 +73,26 @@ func spawnEnterInterval() time.Duration {
 	}
 	return time.Duration(ms) * time.Millisecond
 }
+
+// SFARM_CS2_PHASE1_WINDOW_GRACE_SEC: если sandbox уже сообщил PID cs2, но X11 не видит окно с «Counter-Strike» в заголовке,
+// через N секунд всё равно перейти к фазе 2 (иначе вечный wait-process при hidepid/другом WM_NAME). 0 = строго ждать окно+процесс.
+func phase1WindowGraceDuration() time.Duration {
+	s := strings.TrimSpace(os.Getenv("SFARM_CS2_PHASE1_WINDOW_GRACE_SEC"))
+	if s == "0" {
+		return 0
+	}
+	if s == "" {
+		return 55 * time.Second
+	}
+	sec, err := strconv.Atoi(s)
+	if err != nil || sec < 0 {
+		return 55 * time.Second
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// SFARM_CS2_SKIP_WINDOW_CHECK=1 — фаза 1 достаточно isCS2RunningOnDisplay (окно не требуется). Только для отладки.
+func cs2SkipWindowCheck() bool {
+	v := strings.TrimSpace(os.Getenv("SFARM_CS2_SKIP_WINDOW_CHECK"))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+}

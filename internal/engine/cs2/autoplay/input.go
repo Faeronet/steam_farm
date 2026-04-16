@@ -99,9 +99,9 @@ static Window cs2_cached_window = 0;
 
 static int name_matches_cs2(const char* name) {
 	if (!name) return 0;
-	if (strstr(name, "Counter-Strike")) return 1;
-	if (strstr(name, "counter-strike")) return 1;
-	if (strstr(name, "CS2") || strstr(name, "cs2")) return 1;
+	// strcasestr: match title/class case-insensitively
+	if (strcasestr(name, "counter-strike")) return 1;
+	if (strcasestr(name, "cs2")) return 1;
 	return 0;
 }
 

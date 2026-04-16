@@ -745,21 +745,35 @@ func (b *CS2Bot) run(ctx context.Context) {
 
 func (b *CS2Bot) waitForCS2Process(ctx context.Context) bool {
 	b.setPhase(PhaseWaitProcess)
-	log.Printf("[CS2Bot:%d] Phase 1: waiting for cs2 process on :%d + matching window...", b.display, b.display)
+	log.Printf("[CS2Bot:%d] Phase 1: waiting for cs2 on :%d (process + CS2-titled window; grace=%v, skip_window=%v)...",
+		b.display, b.display, phase1WindowGraceDuration(), cs2SkipWindowCheck())
 
 	deadline := time.After(10 * time.Minute)
 	iter := 0
+	phase1Start := time.Now()
 	for {
 		win := b.input.HasCS2Window()
 		proc := isCS2RunningOnDisplay(b.display, b.accountID)
-		if win && proc {
+		_, sandboxCS2 := sandboxReportedCS2PIDAlive(b.accountID)
+		grace := phase1WindowGraceDuration()
+
+		if proc && win {
 			log.Printf("[CS2Bot:%d] CS2 process (DISPLAY=:%d) + window OK", b.display, b.display)
+			return true
+		}
+		if cs2SkipWindowCheck() && proc {
+			log.Printf("[CS2Bot:%d] Phase 1: SFARM_CS2_SKIP_WINDOW_CHECK — proc OK, skip window", b.display)
+			return true
+		}
+		if proc && sandboxCS2 && !win && grace > 0 && time.Since(phase1Start) >= grace {
+			log.Printf("[CS2Bot:%d] Phase 1: sandbox sees cs2 pid but no CS2 window after %v — continuing (check X11 auth / WM_NAME; VNC may stay black until game draws)",
+				b.display, grace)
 			return true
 		}
 		iter++
 		if iter%6 == 0 {
-			log.Printf("[CS2Bot:%d] Phase 1: window=%v cs2_on_display_%d=%v (need both)",
-				b.display, win, b.display, proc)
+			log.Printf("[CS2Bot:%d] Phase 1: window=%v proc(cs2)=%v sandbox_cs2_pid=%v (ideal: window+proc; after %v with pid: proceed)",
+				b.display, win, proc, sandboxCS2, grace)
 		}
 		select {
 		case <-ctx.Done():

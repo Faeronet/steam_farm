@@ -600,16 +600,27 @@ func tryStartLinuxMemDriver(display int, sandboxAccountID int64, off cs2MemoryJS
 		log.Printf("[CS2Mem:%d] offsets from %q: m_v_old_origin must be non-zero", display, sourceLabel)
 		return nil
 	}
-	pid, ok := cs2PIDForDisplay(display, sandboxAccountID)
-	if !ok || pid <= 0 {
+	cands := cs2PIDCandidatesForDisplay(display, sandboxAccountID)
+	if len(cands) == 0 {
 		log.Printf("[CS2Mem:%d] no cs2 pid (DISPLAY=:%d match failed); set SFARM_CS2_PID or fix DISPLAY on game process", display, display)
 		return nil
 	}
-	base, selPath, err := moduleImageBase(pid, off)
-	if err != nil || base == 0 {
-		log.Printf("[CS2Mem:%d] module base pid=%d substr=%q: %v — hint: /proc/%d/maps | grep -i client",
-			display, pid, off.ModuleSubstr, err, pid)
-		logGrepHintMaps(pid, off.ModuleSubstr)
+	var pid int
+	var base uint64
+	var selPath string
+	var lastErr error
+	for _, p := range cands {
+		b, sp, err := moduleImageBase(p, off)
+		if err == nil && b != 0 {
+			pid, base, selPath = p, b, sp
+			break
+		}
+		lastErr = err
+	}
+	if pid <= 0 || base == 0 {
+		log.Printf("[CS2Mem:%d] module base substr=%q: tried pids %v — last: %v — hint: /proc/<pid>/maps | grep -i libclient",
+			display, off.ModuleSubstr, cands, lastErr)
+		logGrepHintMaps(cands[0], off.ModuleSubstr)
 		return nil
 	}
 
@@ -1126,6 +1137,42 @@ func cs2PIDForDisplay(display int, sandboxAccountID int64) (int, bool) {
 	return 0, false
 }
 
+// cs2PIDCandidatesForDisplay — все кандидаты для libclient (несколько процессов с comm cs2: лаунчер без .so и основной клиент).
+// Порядок: SFARM_CS2_PID, sandbox IPC, затем pgrep.
+func cs2PIDCandidatesForDisplay(display int, sandboxAccountID int64) []int {
+	var out []int
+	seen := map[int]struct{}{}
+	add := func(p int) {
+		if p <= 0 {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	if s := strings.TrimSpace(os.Getenv(envCS2PID)); s != "" {
+		if p, err := strconv.Atoi(s); err == nil {
+			add(p)
+		}
+	}
+	if sandboxAccountID > 0 {
+		if p, ok := sandboxReportedCS2PIDAlive(sandboxAccountID); ok {
+			add(p)
+		}
+	}
+	for _, pidStr := range cs2PIDsLinux() {
+		p, err := strconv.Atoi(pidStr)
+		if err != nil || p <= 0 {
+			continue
+		}
+		add(p)
+	}
+	_ = display // при необходимости можно фильтровать по DISPLAY; пока перебор безопасен при малом числе cs2
+	return out
+}
+
 // moduleImageBase: lowest mapped vaddr for the client module. Dump RVAs are relative to this, not only the r-xp text line.
 func moduleImageBase(pid int, off cs2MemoryJSON) (base uint64, path string, err error) {
 	mapPath := filepath.Join("/proc", strconv.Itoa(pid), "maps")
@@ -1137,6 +1184,7 @@ func moduleImageBase(pid int, off cs2MemoryJSON) (base uint64, path string, err 
 	if sub == "" {
 		sub = "libclient"
 	}
+	subLower := strings.ToLower(sub)
 	needlePath := strings.TrimSpace(off.ModulePathContains)
 
 	var minAddr uint64 = math.MaxUint64
@@ -1149,25 +1197,22 @@ func moduleImageBase(pid int, off cs2MemoryJSON) (base uint64, path string, err 
 		if strings.HasPrefix(mpath, "[") {
 			continue
 		}
-		if strings.Contains(strings.ToLower(mpath), "steamclient") {
+		ml := strings.ToLower(mpath)
+		if strings.Contains(ml, "steamclient") {
 			continue
 		}
-		if strings.Contains(strings.ToLower(mpath), "panorama") {
+		if strings.Contains(ml, "panorama") {
 			continue
 		}
-		if !strings.Contains(mpath, sub) {
+		if !strings.Contains(ml, subLower) {
 			continue
 		}
 		if needlePath != "" && !strings.Contains(mpath, needlePath) {
 			continue
 		}
-		// Только клиент CS2 под linuxsteamrt64 (путь Steam: .../game/bin/linuxsteamrt64/; старые билды — csgo/bin/).
-		if needlePath == "" && strings.Contains(sub, "libclient") {
-			ml := strings.ToLower(mpath)
+		// Клиент CS2: только сегменты под linuxsteamrt64 (пути вида .../game/csgo/bin/.../linuxsteamrt64/libclient.so).
+		if needlePath == "" && strings.Contains(subLower, "libclient") {
 			if !strings.Contains(ml, "linuxsteamrt64") {
-				continue
-			}
-			if !strings.Contains(ml, "/game/bin/linuxsteamrt64") && !strings.Contains(ml, "/csgo/bin/linuxsteamrt64") {
 				continue
 			}
 		}

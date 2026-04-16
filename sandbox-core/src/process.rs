@@ -105,13 +105,13 @@ touch "$SFARM_XAUTH"
 N="$SFARM_DISP"
 # Одна и та же копия MIT-MAGIC-COOKIE под разными ключами (unix vs TCP / разные имена хоста).
 for name in ":$N" "localhost:$N" "127.0.0.1:$N"; do
-  xauth -f "$SFARM_XAUTH" -q add "$name" MIT-MAGIC-COOKIE-1 "$COOKIE"
+  xauth -f "$SFARM_XAUTH" add "$name" MIT-MAGIC-COOKIE-1 "$COOKIE"
 done
 if H="$(hostname 2>/dev/null)"; [ -n "$H" ]; then
-  xauth -f "$SFARM_XAUTH" -q add "${H}:$N" MIT-MAGIC-COOKIE-1 "$COOKIE" || true
+  xauth -f "$SFARM_XAUTH" add "${H}:$N" MIT-MAGIC-COOKIE-1 "$COOKIE" 2>/dev/null || true
 fi
 if HF="$(hostname -f 2>/dev/null)"; [ -n "$HF" ] && [ "$HF" != "$(hostname 2>/dev/null)" ]; then
-  xauth -f "$SFARM_XAUTH" -q add "${HF}:$N" MIT-MAGIC-COOKIE-1 "$COOKIE" || true
+  xauth -f "$SFARM_XAUTH" add "${HF}:$N" MIT-MAGIC-COOKIE-1 "$COOKIE" 2>/dev/null || true
 fi
 "#,
         )
@@ -300,7 +300,7 @@ impl ProcessSupervisor {
                 "-nowireframe",
                 "-nowcr",
                 "-defer",
-                "18",
+                "28",
             ])
             .env_remove("LD_LIBRARY_PATH");
         if xauth_file.is_file() {

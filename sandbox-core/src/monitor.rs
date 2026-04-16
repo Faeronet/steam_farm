@@ -80,21 +80,32 @@ fn is_cs2_process(pid: u32) -> bool {
     lossy.contains("Counter-Strike Global Offensive") && lossy.contains("cs2")
 }
 
-/// Совпадает с Go environMatchesDisplay: SFARM_DISPLAY, DISPLAY=:N, 127.0.0.1:N (snap Steam → TCP).
+/// Номер дисплея из `DISPLAY` (`:100`, `:100.0`, `192.168.1.5:100`, …) — как в Go `environMatchesDisplay`.
+fn display_num_from_display_env_val(val: &str) -> Option<u16> {
+    let val = val.trim();
+    let i = val.rfind(':')?;
+    let tail = val.get(i + 1..)?.trim();
+    let num_str = tail.split('.').next()?;
+    num_str.parse().ok()
+}
+
 fn environ_matches_display(pid: u32, display: u16) -> bool {
     let Ok(data) = fs::read(format!("/proc/{}/environ", pid)) else {
         return false;
     };
-    for needle in [
-        format!("SFARM_DISPLAY={}\0", display),
-        format!("DISPLAY=:{}\0", display),
-        format!("DISPLAY=:{}.0\0", display),
-        format!("DISPLAY=127.0.0.1:{}\0", display),
-        format!("DISPLAY=localhost:{}\0", display),
-    ] {
-        let n = needle.as_bytes();
-        if data.len() >= n.len() && data.windows(n.len()).any(|w| w == n) {
-            return true;
+    for chunk in data.split(|&b| b == 0) {
+        if let Some(rest) = chunk.strip_prefix(b"SFARM_DISPLAY=") {
+            if let Ok(s) = std::str::from_utf8(rest) {
+                if s.parse::<u16>().ok() == Some(display) {
+                    return true;
+                }
+            }
+        } else if let Some(rest) = chunk.strip_prefix(b"DISPLAY=") {
+            if let Ok(s) = std::str::from_utf8(rest) {
+                if display_num_from_display_env_val(s) == Some(display) {
+                    return true;
+                }
+            }
         }
     }
     false

@@ -759,23 +759,31 @@ func readProcPPid(pid int) int {
 	return -1
 }
 
-// environMatchesDisplay: SFARM_DISPLAY (песочница), DISPLAY=:N, :N.0 и варианты с хостом.
+// displayNumFromDisplayEnv парсит номер дисплея из DISPLAY (в т.ч. `192.168.x.x:100` для snap → TCP на хост).
+func displayNumFromDisplayEnv(val string) (int, bool) {
+	val = strings.TrimSpace(val)
+	i := strings.LastIndex(val, ":")
+	if i < 0 || i+1 >= len(val) {
+		return 0, false
+	}
+	tail := val[i+1:]
+	if j := strings.IndexByte(tail, '.'); j >= 0 {
+		tail = tail[:j]
+	}
+	d, err := strconv.Atoi(tail)
+	if err != nil || d < 0 {
+		return 0, false
+	}
+	return d, true
+}
+
+// environMatchesDisplay: SFARM_DISPLAY, любой DISPLAY=host:N (включая LAN IP для snap).
 func environMatchesDisplay(pid int, display int) bool {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "environ"))
 	if err != nil {
 		return false
 	}
-	// Номер X-дисплея без двоеточия (100, 101) — задаётся sandbox (process.rs) для всех потомков Steam.
 	if bytes.Contains(data, []byte(fmt.Sprintf("SFARM_DISPLAY=%d\x00", display))) {
-		return true
-	}
-	if bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=:%d\x00", display))) ||
-		bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=:%d.0\x00", display))) {
-		return true
-	}
-	// Steam snap: DISPLAY=127.0.0.1:N (TCP к Xvfb на хосте).
-	if bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=127.0.0.1:%d\x00", display))) ||
-		bytes.Contains(data, []byte(fmt.Sprintf("DISPLAY=localhost:%d\x00", display))) {
 		return true
 	}
 	for _, part := range bytes.Split(data, []byte{0}) {
@@ -783,18 +791,7 @@ func environMatchesDisplay(pid int, display int) bool {
 			continue
 		}
 		val := string(bytes.TrimPrefix(part, []byte("DISPLAY=")))
-		if strings.HasPrefix(val, ":") {
-			var d int
-			if n, _ := fmt.Sscanf(val, ":%d", &d); n == 1 && d == display {
-				return true
-			}
-			continue
-		}
-		var d int
-		if n, _ := fmt.Sscanf(val, "127.0.0.1:%d", &d); n == 1 && d == display {
-			return true
-		}
-		if n, _ := fmt.Sscanf(val, "localhost:%d", &d); n == 1 && d == display {
+		if d, ok := displayNumFromDisplayEnv(val); ok && d == display {
 			return true
 		}
 	}

@@ -78,6 +78,31 @@ fn snap_steam_available() -> bool {
         .unwrap_or(false)
 }
 
+/// У snap свой network namespace: `127.0.0.1` — это не loopback хоста, Xvfb там недоступен → «Authorization…» / чёрный экран.
+/// Берём реальный IPv4 хоста (LAN), до которого snap может достучаться по TCP (порт 6000+N). Переопределение: `SFARM_X11_HOST`.
+fn host_ip_for_snap_x11() -> String {
+    if let Ok(h) = std::env::var("SFARM_X11_HOST") {
+        let t = h.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    for cmd in [
+        "hostname -I 2>/dev/null | tr ' \\t' '\\n' | awk 'NF && !/^127\\./{print; exit}'",
+        "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i==\"src\"){print $(i+1); exit}}'",
+    ] {
+        if let Ok(o) = std::process::Command::new("sh").arg("-c").arg(cmd).output() {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if !s.is_empty() && s != "127.0.0.1" {
+                    return s;
+                }
+            }
+        }
+    }
+    "127.0.0.1".to_string()
+}
+
 pub struct ProcessSupervisor {
     cfg: LaunchConfig,
     base: PathBuf,
@@ -349,8 +374,15 @@ impl ProcessSupervisor {
             .collect::<Vec<_>>()
             .join(" ");
 
-        // TCP: snap не видит unix-сокет Xvfb на хосте в /tmp; `127.0.0.1:N` → порт 6000+N. Вместе с Xvfb `-ac` без `-auth`.
-        let display_tcp = format!("127.0.0.1:{}", self.cfg.display);
+        // TCP к Xvfb на **хосте** (не 127.0.0.1 внутри snap — иначе не тот loopback). Порт 6000+N.
+        let host_x = host_ip_for_snap_x11();
+        let display_tcp = format!("{}:{}", host_x, self.cfg.display);
+        if host_x == "127.0.0.1" {
+            eprintln!(
+                "[sandbox-{}] warning: SFARM_X11_HOST unset and LAN IP not detected — snap Steam may not reach Xvfb; export SFARM_X11_HOST=<this machine IPv4>",
+                self.cfg.id
+            );
+        }
 
         // steam_real/snap_common — из найденного Steam (find_steam), не из $HOME супервизора:
         // иначе при root + Steam у steam-farm путь был /root/snap/... и steam.sh не находился.
@@ -370,11 +402,7 @@ impl ProcessSupervisor {
         let try_fuse_cs2_overlay = self.cfg.game == "cs2";
         let common_folder = steam::steamapps_common_folder_name(&self.cfg.game).unwrap_or("");
 
-        // Shell script that runs inside the snap container:
-        // 1. Sets HOME to the sandbox directory (accessible via snap's shared data)
-        // 2. Creates Steam symlinks
-        // 3. Sets DISPLAY to the Xvfb instance
-        // 4. Runs steam.sh with bootstrap-skip flags
+        // Shell script inside snap: DISPLAY=<LAN или SFARM_X11_HOST>:N (TCP на Xvfb хоста; 127.0.0.1 в snap ≠ хост).
 
         let inner_script = format!(
             r#"

@@ -16,6 +16,43 @@ fn self_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+fn shell_escape_single(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\"'\"'"))
+}
+
+fn find_sandbox_bin() -> String {
+    let local = self_dir().join("sfarm-sandbox");
+    if local.is_file() {
+        return local.display().to_string();
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if exe.file_name().and_then(|n| n.to_str()) == Some("sfarm-sandbox") {
+            return exe.display().to_string();
+        }
+    }
+    find_bin("sfarm-sandbox")
+}
+
+/// Встроенный скрипт: правит localconfig.vdf — CloudEnabled=0 для COMPAT_APP_ID (Rust; python — запасной путь).
+fn steam_cloud_patch_heredoc(sandbox_bin: &str) -> String {
+    let q = shell_escape_single(sandbox_bin);
+    let py = include_str!("../scripts/patch_steam_cloud.py");
+    format!(
+        r#"
+# SFARM: отключить Steam Cloud для игры (appid=COMPAT_APP_ID) — без модалки «Cloud Out of Date».
+if [ -n "$COMPAT_APP_ID" ] && [ "$COMPAT_APP_ID" != "0" ] && [ -f {q} ]; then
+  {q} patch-steam-cloud --home "$HOME" --app-id "$COMPAT_APP_ID" 2>/dev/null || true
+elif [ -n "$COMPAT_APP_ID" ] && [ "$COMPAT_APP_ID" != "0" ] && command -v python3 >/dev/null 2>&1; then
+  python3 <<'PYEOF'
+{py}
+PYEOF
+fi
+"#,
+        q = q,
+        py = py
+    )
+}
+
 fn find_bin(name: &str) -> String {
     let local = self_dir().join(name);
     if local.is_file() {
@@ -370,7 +407,7 @@ export TMP="$TMPDIR"
 export TEMP="$TMPDIR"
 export TEMPDIR="$TMPDIR"
 
-COMPAT_APP_ID='{compat_app_id}'
+export COMPAT_APP_ID='{compat_app_id}'
 COMMON_FOLDER='{common_folder}'
 TRY_FUSE_CS2_OVERLAY='{try_fuse_cs2_overlay}'
 
@@ -551,6 +588,8 @@ export PATH="$HOME/bin:$PATH"
 # Зависшие cs2/dota2 на этом DISPLAY уже убраны супервизором (Rust), до snap — не через sh,
 # иначе snap часто выполняет -c через dash и ломается на local/read -d ''.
 
+{patch_cloud}
+
 "$STEAM_LOCAL/steam.sh" {args} &
 STEAM_PID=$!
 # Keep the shell alive so the sandbox supervisor can track it.
@@ -569,6 +608,7 @@ while true; do sleep 60; done
             compat_app_id = compat_app_id,
             common_folder = common_folder,
             try_fuse_cs2_overlay = if try_fuse_cs2_overlay { "1" } else { "0" },
+            patch_cloud = steam_cloud_patch_heredoc(&find_sandbox_bin()),
             args = args_str,
         );
 

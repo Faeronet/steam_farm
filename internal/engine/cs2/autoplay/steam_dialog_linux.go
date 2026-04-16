@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,10 +18,8 @@ const steamDialogDismissCooldown = 3 * time.Second
 // maybeDismissSteamDialogs закрывает Steam Cloud, CS2 «Disconnected», Steam Remote Play и т.д.
 // Возвращает true, если закрыто окно, после которого нужен повторный поиск матча (Disconnected / kick / connection lost).
 func maybeDismissSteamDialogs(input *InputSender, display int, lastRun *time.Time) (needsRematch bool) {
-	if lastRun != nil && time.Since(*lastRun) < steamDialogDismissCooldown {
-		return false
-	}
-	// Тот же X11/XTest, что и игровой ввод — обходит отсутствие xdotool и расхождение DISPLAY.
+	// Облако: НЕ за общим cooldown с disconnect-диалогами — иначе после любого lastRun 3 с не пробуем Cloud,
+	// а ложный «успех» (fallback-клик мимо) гасит все попытки.
 	if input != nil && input.TryDismissSteamCloudDialog() {
 		if lastRun != nil {
 			*lastRun = time.Now()
@@ -28,16 +27,24 @@ func maybeDismissSteamDialogs(input *InputSender, display int, lastRun *time.Tim
 		log.Printf("[CS2Bot:%s] Auto-dismissed Steam Cloud dialog (X11/XTest)", steamDisplayEnv(display))
 		return false
 	}
+	if strings.TrimSpace(os.Getenv("SFARM_STEAM_XDOTOOL")) != "0" {
+		if _, err := exec.LookPath("xdotool"); err == nil {
+			if dismissSteamCloudDialogs(display) {
+				if lastRun != nil {
+					*lastRun = time.Now()
+				}
+				return false
+			}
+		}
+	}
+	// Прочие диалоги (xdotool) — с cooldown.
+	if lastRun != nil && time.Since(*lastRun) < steamDialogDismissCooldown {
+		return false
+	}
 	if strings.TrimSpace(os.Getenv("SFARM_STEAM_XDOTOOL")) == "0" {
 		return false
 	}
 	if _, err := exec.LookPath("xdotool"); err != nil {
-		return false
-	}
-	if dismissSteamCloudDialogs(display) {
-		if lastRun != nil {
-			*lastRun = time.Now()
-		}
 		return false
 	}
 	return dismissSteamLikeDialogs(display, lastRun, false)
@@ -120,16 +127,20 @@ func looksLikeSteamCloudSaveDialogTitle(name string) bool {
 	if n == "" {
 		return false
 	}
-	if !strings.Contains(n, "cloud") {
+	hasCloud := strings.Contains(n, "cloud") || strings.Contains(n, "облако")
+	if !hasCloud {
 		return false
 	}
-	// «Cloud Out of Date», конфликт синхронизации, «not yet in the cloud» в тексте заголовка редко
 	return strings.Contains(n, "out of date") ||
 		strings.Contains(n, "outdated") ||
 		strings.Contains(n, "not yet") ||
 		strings.Contains(n, "upload") ||
 		strings.Contains(n, "conflict") ||
-		strings.Contains(n, "sync")
+		strings.Contains(n, "sync") ||
+		strings.Contains(n, "save") ||
+		strings.Contains(n, "устар") ||
+		strings.Contains(n, "синхрон") ||
+		strings.Contains(n, "конфликт")
 }
 
 func steamCloudDialogWIDsByNameScan(env []string) []string {
@@ -207,6 +218,24 @@ func tryDismissWindow(env []string, wid string) bool {
 	return tryDismissWindowKeys(env, wid, "Return")
 }
 
+// Согласовано с input.go (C): по умолчанию 2×Tab+Return; SFARM_STEAM_CLOUD_TAB_COUNT; только Enter — SFARM_STEAM_CLOUD_KEYS=return.
+func steamCloudDismissKeyArgs() []string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("SFARM_STEAM_CLOUD_KEYS")), "return") {
+		return []string{"Return"}
+	}
+	n := 3
+	if s := strings.TrimSpace(os.Getenv("SFARM_STEAM_CLOUD_TAB_COUNT")); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v >= 0 && v <= 8 {
+			n = v
+		}
+	}
+	out := make([]string, 0, n+1)
+	for i := 0; i < n; i++ {
+		out = append(out, "Tab")
+	}
+	out = append(out, "Return")
+	return out
+}
 
 // dismissSteamCloudDialogs — «Cloud Out of Date» / конфликт облака — «Play anyway».
 func dismissSteamCloudDialogs(display int) bool {
@@ -224,15 +253,12 @@ func dismissSteamCloudDialogsOnEnv(disp string, env []string) bool {
 		"Cloud Out of Date",
 		"Cloud out of date",
 		"cloud out of date",
+		"Облако",
+		"облако",
 	}
 
 	tryCloud := func(wid string, via string) bool {
-		var ok bool
-		if strings.EqualFold(strings.TrimSpace(os.Getenv("SFARM_STEAM_CLOUD_KEYS")), "tab,return") {
-			ok = tryDismissWindowKeys(env, wid, "Tab", "Return")
-		} else {
-			ok = tryDismissWindow(env, wid)
-		}
+		ok := tryDismissWindowKeys(env, wid, steamCloudDismissKeyArgs()...)
 		if !ok {
 			return false
 		}

@@ -8,9 +8,11 @@ package autoplay
 #include <X11/Xatom.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <limits.h>
 
 static volatile int x11_broken = 0;
 
@@ -177,7 +179,7 @@ static int x11_fetch_title_utf8(Display* d, Window w, char* buf, size_t bufsz) {
 	int act_fmt;
 	unsigned long nitems, bytes_after;
 	unsigned char* prop = NULL;
-	if (XGetWindowProperty(d, w, net_wm_name, 0, 512, False, utf8,
+	if (XGetWindowProperty(d, w, net_wm_name, 0, 2048, False, utf8,
 			&act_type, &act_fmt, &nitems, &bytes_after, &prop) == Success && prop && nitems > 0) {
 		size_t n = (size_t)nitems < bufsz - 1 ? (size_t)nitems : bufsz - 1;
 		memcpy(buf, prop, n);
@@ -202,27 +204,77 @@ static void x11_ascii_lower_inplace(char* s) {
 	}
 }
 
-// Совпадает с looksLikeSteamCloudSaveDialogTitle (steam_dialog_linux.go).
+// «Cloud Out of Date» / локали: EN — cloud; RU — «облако» (UTF-8), без ASCII "cloud".
 static int x11_title_is_steam_cloud_dialog(const char* title) {
 	if (!title || !title[0]) return 0;
-	char low[768];
+	char low[1024];
 	strncpy(low, title, sizeof(low) - 1);
 	low[sizeof(low) - 1] = 0;
 	x11_ascii_lower_inplace(low);
-	if (!strstr(low, "cloud")) return 0;
+	int has_cloud_kw = strstr(low, "cloud") != NULL;
+	if (!has_cloud_kw) {
+		has_cloud_kw = strstr(title, "облако") != NULL || strstr(title, "Облако") != NULL;
+	}
+	if (!has_cloud_kw) return 0;
 	if (strstr(low, "out of date") || strstr(low, "outdated")) return 1;
 	if (strstr(low, "not yet")) return 1;
 	if (strstr(low, "upload")) return 1;
 	if (strstr(low, "conflict")) return 1;
 	if (strstr(low, "sync")) return 1;
+	if (strstr(low, "save")) return 1;
+	if (strstr(title, "устар")) return 1;
+	if (strstr(title, "Устар")) return 1;
+	if (strstr(title, "синхрон") || strstr(title, "Синхрон")) return 1;
+	if (strstr(title, "конфликт") || strstr(title, "Конфликт")) return 1;
 	return 0;
 }
 
 static Window x11_find_steam_cloud_dialog_r(Display* d, Window w, int depth, int max_depth) {
 	if (depth > max_depth) return 0;
 
-	char title[768];
+	XWindowAttributes gattr;
+	if (!XGetWindowAttributes(d, w, &gattr) || gattr.map_state != IsViewable)
+		goto children;
+
+	char title[1024];
 	if (x11_fetch_title_utf8(d, w, title, sizeof(title)) && x11_title_is_steam_cloud_dialog(title))
+		return w;
+
+children:
+	{
+		Window root_ret, parent_ret;
+		Window* children = NULL;
+		unsigned int nchildren = 0;
+		if (!XQueryTree(d, w, &root_ret, &parent_ret, &children, &nchildren))
+			return 0;
+
+		Window found = 0;
+		for (unsigned int i = 0; i < nchildren && !found; i++) {
+			found = x11_find_steam_cloud_dialog_r(d, children[i], depth + 1, max_depth);
+		}
+		if (children) XFree(children);
+		return found;
+	}
+}
+
+static int x11_class_hint_has_steam(Display* d, Window w) {
+	XClassHint ch;
+	memset(&ch, 0, sizeof(ch));
+	if (!XGetClassHint(d, w, &ch))
+		return 0;
+	int ok = 0;
+	if (ch.res_name && strcasestr(ch.res_name, "steam")) ok = 1;
+	if (!ok && ch.res_class && strcasestr(ch.res_class, "steam")) ok = 1;
+	if (ch.res_name) XFree(ch.res_name);
+	if (ch.res_class) XFree(ch.res_class);
+	return ok;
+}
+
+// Первое viewable-окно со Steam в WM_CLASS (родитель модалок CEF).
+static Window x11_find_steam_app_window_r(Display* d, Window w, int depth, int max_depth) {
+	if (depth > max_depth) return 0;
+	XWindowAttributes attr;
+	if (XGetWindowAttributes(d, w, &attr) && attr.map_state == IsViewable && x11_class_hint_has_steam(d, w))
 		return w;
 
 	Window root_ret, parent_ret;
@@ -230,41 +282,225 @@ static Window x11_find_steam_cloud_dialog_r(Display* d, Window w, int depth, int
 	unsigned int nchildren = 0;
 	if (!XQueryTree(d, w, &root_ret, &parent_ret, &children, &nchildren))
 		return 0;
-
 	Window found = 0;
 	for (unsigned int i = 0; i < nchildren && !found; i++) {
-		found = x11_find_steam_cloud_dialog_r(d, children[i], depth + 1, max_depth);
+		found = x11_find_steam_app_window_r(d, children[i], depth + 1, max_depth);
 	}
 	if (children) XFree(children);
 	return found;
 }
 
-// 1 = нашли окно и отправили клавиши (Enter или Tab+Enter). Не static — вызывается из Go worker.
-int x11_dismiss_steam_cloud_dialog(Display* d, int use_tab_before_return) {
-	Window w = x11_find_steam_cloud_dialog_r(d, DefaultRootWindow(d), 0, 24);
-	if (!w) return 0;
+// Самое большое viewable-окно с WM_CLASS Steam (главный клиент, не тулбар).
+static void x11_steam_largest_area_r(Display* d, Window w, int depth, int max_depth,
+    Window* best, unsigned long* best_area) {
+	if (depth > max_depth) return;
 
-	XRaiseWindow(d, w);
-	XSetInputFocus(d, w, RevertToParent, CurrentTime);
-	XFlush(d);
-	usleep(150000);
-
-	if (use_tab_before_return) {
-		KeyCode tab = XKeysymToKeycode(d, 0xff09);
-		if (tab) {
-			XTestFakeKeyEvent(d, tab, True, CurrentTime);
-			XTestFakeKeyEvent(d, tab, False, CurrentTime);
-			XFlush(d);
-			usleep(50000);
+	XWindowAttributes gattr;
+	if (XGetWindowAttributes(d, w, &gattr) && gattr.map_state == IsViewable && x11_class_hint_has_steam(d, w)) {
+		unsigned long a = (unsigned long)gattr.width * (unsigned long)gattr.height;
+		if (a > *best_area) {
+			*best_area = a;
+			*best = w;
 		}
 	}
 
+	Window root_ret, parent_ret;
+	Window* children = NULL;
+	unsigned int nchildren = 0;
+	if (!XQueryTree(d, w, &root_ret, &parent_ret, &children, &nchildren))
+		return;
+	for (unsigned int i = 0; i < nchildren; i++)
+		x11_steam_largest_area_r(d, children[i], depth + 1, max_depth, best, best_area);
+	if (children) XFree(children);
+}
+
+static Window x11_largest_steam_window(Display* d) {
+	Window best = 0;
+	unsigned long best_area = 0;
+	x11_steam_largest_area_r(d, DefaultRootWindow(d), 0, 48, &best, &best_area);
+	return best;
+}
+
+// Модалка Steam/CEF с WM_TRANSIENT_FOR = главное окно клиента (отдельное X-окно, не вложенное в дереве WM_NAME).
+static void x11_modal_transient_scan_r(Display* d, Window w, int depth, int max_depth,
+    Window steam, unsigned long steam_area, Window* best, unsigned long* best_area) {
+	if (depth > max_depth || !steam) return;
+
+	Window transient_for = None;
+	if (XGetTransientForHint(d, w, &transient_for) && transient_for == steam && w != steam) {
+		XWindowAttributes a;
+		if (XGetWindowAttributes(d, w, &a) && a.map_state == IsViewable) {
+			unsigned long area = (unsigned long)a.width * (unsigned long)a.height;
+			if (area > 8000 && area < steam_area && area < *best_area) {
+				*best_area = area;
+				*best = w;
+			}
+		}
+	}
+
+	Window root_ret, parent_ret;
+	Window* children = NULL;
+	unsigned int nchildren = 0;
+	if (!XQueryTree(d, w, &root_ret, &parent_ret, &children, &nchildren))
+		return;
+	for (unsigned int i = 0; i < nchildren; i++)
+		x11_modal_transient_scan_r(d, children[i], depth + 1, max_depth, steam, steam_area, best, best_area);
+	if (children) XFree(children);
+}
+
+static Window x11_modal_transient_for_steam(Display* d, Window steam) {
+	if (!steam) return 0;
+	XWindowAttributes sa;
+	if (!XGetWindowAttributes(d, steam, &sa)) return 0;
+	unsigned long steam_area = (unsigned long)sa.width * (unsigned long)sa.height;
+	if (steam_area < 100000) return 0;
+	Window best = 0;
+	unsigned long best_area = ULONG_MAX;
+	x11_modal_transient_scan_r(d, DefaultRootWindow(d), 0, 56, steam, steam_area, &best, &best_area);
+	return best;
+}
+
+// SFARM_STEAM_CLOUD_TAB_COUNT: число Tab перед Enter (по умолчанию 3).
+static void x11_send_enter_maybe_tab(Display* d, int use_tab_before_return) {
+	int n = 0;
+	if (use_tab_before_return) {
+		n = 3;
+		const char* tc = getenv("SFARM_STEAM_CLOUD_TAB_COUNT");
+		if (tc && tc[0]) {
+			int v = atoi(tc);
+			if (v >= 0 && v <= 8) n = v;
+		}
+	}
+	KeyCode tab = XKeysymToKeycode(d, 0xff09);
+	for (int i = 0; i < n && tab; i++) {
+		XTestFakeKeyEvent(d, tab, True, CurrentTime);
+		XTestFakeKeyEvent(d, tab, False, CurrentTime);
+		XFlush(d);
+		usleep(48000);
+	}
 	KeyCode kc = XKeysymToKeycode(d, 0xff0d);
-	if (!kc) return 0;
+	if (!kc) return;
 	XTestFakeKeyEvent(d, kc, True, CurrentTime);
 	XTestFakeKeyEvent(d, kc, False, CurrentTime);
 	XFlush(d);
+}
+
+// Модалка внутри CEF: фокус на крупнейшем окне Steam → Tab×N+Enter → несколько кликов по кнопке «Play anyway».
+// Клики отключить: SFARM_STEAM_CLOUD_FALLBACK_CLICK=0 (останутся только клавиши).
+static int x11_steam_cloud_cef_fallback(Display* d, int use_tab_before_return) {
+	int allow_click = 1;
+	const char* e = getenv("SFARM_STEAM_CLOUD_FALLBACK_CLICK");
+	if (e && e[0] == '0' && e[1] == 0) allow_click = 0;
+
+	Window steam = x11_largest_steam_window(d);
+	if (!steam) return 0;
+	XWindowAttributes attr;
+	if (!XGetWindowAttributes(d, steam, &attr) || attr.map_state != IsViewable) return 0;
+	unsigned int bw = (unsigned int)attr.width;
+	unsigned int bh = (unsigned int)attr.height;
+	if (bw < 320 || bh < 240) return 0;
+	int wx, wy;
+	Window junk;
+	if (!XTranslateCoordinates(d, steam, DefaultRootWindow(d), 0, 0, &wx, &wy, &junk)) return 0;
+	XRaiseWindow(d, steam);
+	XSetInputFocus(d, steam, RevertToPointerRoot, CurrentTime);
+	XFlush(d);
+	usleep(160000);
+	x11_send_enter_maybe_tab(d, use_tab_before_return);
+	usleep(200000);
+	if (!allow_click) return 1;
+	{
+		static const double fx[] = {0.62, 0.68, 0.58, 0.72, 0.52, 0.65, 0.70, 0.55};
+		static const double fy[] = {0.55, 0.52, 0.58, 0.47, 0.54, 0.51, 0.50, 0.57};
+		int n = (int)(sizeof(fx) / sizeof(fx[0]));
+		for (int i = 0; i < n; i++) {
+			int x = wx + (int)(bw * fx[i]);
+			int y = wy + (int)(bh * fy[i]);
+			x11_click_at(d, x, y, 1);
+			usleep(95000);
+		}
+	}
 	return 1;
+}
+
+// Запасной клик по корню (старый путь; Xvfb на весь экран).
+static int x11_steam_cloud_fallback_play_anyway_click(Display* d) {
+	const char* e = getenv("SFARM_STEAM_CLOUD_FALLBACK_CLICK");
+	if (e && e[0] == '0' && e[1] == 0) return 0;
+
+	int screen = DefaultScreen(d);
+	Window root = RootWindow(d, screen);
+	XWindowAttributes ra;
+	if (!XGetWindowAttributes(d, root, &ra)) return 0;
+	int rw = ra.width, rh = ra.height;
+	if (rw < 320 || rh < 240) return 0;
+	int x = (int)(rw * 0.71);
+	int y = (int)(rh * 0.56);
+	x11_click_at(d, x, y, 1);
+	return 1;
+}
+
+// 1 = отправили клавиши или fallback-клик. Не static — вызывается из Go worker.
+int x11_dismiss_steam_cloud_dialog(Display* d, int use_tab_before_return) {
+	char tbuf[1024];
+
+	// Уже в фокусе — отдельного WM_NAME может не быть у CEF, но заголовок иногда на фокусе.
+	Window fw = None;
+	int rev = 0;
+	XGetInputFocus(d, &fw, &rev);
+	if (fw != None && fw != PointerRoot) {
+		if (x11_fetch_title_utf8(d, fw, tbuf, sizeof(tbuf)) && x11_title_is_steam_cloud_dialog(tbuf)) {
+			x11_send_enter_maybe_tab(d, use_tab_before_return);
+			return 1;
+		}
+	}
+
+	Window w = x11_find_steam_cloud_dialog_r(d, DefaultRootWindow(d), 0, 48);
+	if (!w) {
+		Window steam = x11_find_steam_app_window_r(d, DefaultRootWindow(d), 0, 12);
+		if (steam)
+			w = x11_find_steam_cloud_dialog_r(d, steam, 0, 56);
+	}
+	if (w) {
+		XRaiseWindow(d, w);
+		XSetInputFocus(d, w, RevertToPointerRoot, CurrentTime);
+		XFlush(d);
+		usleep(180000);
+		x11_send_enter_maybe_tab(d, use_tab_before_return);
+		return 1;
+	}
+
+	// Отдельное X-окно модалки (WM_TRANSIENT_FOR главное Steam), без заголовка «cloud» в WM_NAME.
+	{
+		const char* tr = getenv("SFARM_STEAM_CLOUD_TRANSIENT");
+		if (tr && tr[0] == '0' && tr[1] == 0)
+			goto skip_transient_modal;
+		Window steam_main = x11_largest_steam_window(d);
+		if (steam_main) {
+			Window modal = x11_modal_transient_for_steam(d, steam_main);
+			if (modal) {
+				XRaiseWindow(d, modal);
+				XSetInputFocus(d, modal, RevertToPointerRoot, CurrentTime);
+				XFlush(d);
+				usleep(150000);
+				x11_send_enter_maybe_tab(d, use_tab_before_return);
+				return 1;
+			}
+		}
+	skip_transient_modal:;
+	}
+
+	{
+		const char* cef = getenv("SFARM_STEAM_CLOUD_CEF_FALLBACK");
+		if (cef && cef[0] == '1') {
+			if (x11_steam_cloud_cef_fallback(d, use_tab_before_return))
+				return 1;
+			if (x11_steam_cloud_fallback_play_anyway_click(d))
+				return 1;
+		}
+	}
+
+	return 0;
 }
 
 // Focus the CS2 window. Uses cached window ID if still valid.
@@ -640,6 +876,9 @@ type InputSender struct {
 	closed           bool
 	alive            atomic.Bool
 	workerGen        atomic.Int64
+
+	steamDismissThrottleMu       sync.Mutex
+	lastSteamCloudDismissAttempt time.Time
 }
 
 func NewInputSender(display int) (*InputSender, error) {
@@ -902,11 +1141,19 @@ func (s *InputSender) ClickAt(x, y, button int) {
 func (s *InputSender) FocusGame()            { s.send(x11Cmd{kind: cmdFocus}) }
 
 // TryDismissSteamCloudDialog — модальное «Cloud Out of Date» на том же X11, что и ввод (без xdotool/DISPLAY).
-// Учитывает SFARM_STEAM_CLOUD_KEYS=tab,return. Возвращает true, если окно найдено и отправлены клавиши.
+// SFARM_STEAM_CLOUD_KEYS=return — только Enter. Слепой Tab+мультиклик по клиенту Steam: SFARM_STEAM_CLOUD_CEF_FALLBACK=1.
 func (s *InputSender) TryDismissSteamCloudDialog() bool {
 	if s == nil {
 		return false
 	}
+	s.steamDismissThrottleMu.Lock()
+	if time.Since(s.lastSteamCloudDismissAttempt) < 200*time.Millisecond {
+		s.steamDismissThrottleMu.Unlock()
+		return false
+	}
+	s.lastSteamCloudDismissAttempt = time.Now()
+	s.steamDismissThrottleMu.Unlock()
+
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
@@ -916,10 +1163,11 @@ func (s *InputSender) TryDismissSteamCloudDialog() bool {
 	for len(s.steamDismissChan) > 0 {
 		<-s.steamDismissChan
 	}
-	tab := strings.EqualFold(strings.TrimSpace(os.Getenv("SFARM_STEAM_CLOUD_KEYS")), "tab,return")
-	a := 0
-	if tab {
-		a = 1
+	// По умолчанию Tab+Enter — фокус часто на «Отмена». Только Enter: SFARM_STEAM_CLOUD_KEYS=return
+	k := strings.TrimSpace(os.Getenv("SFARM_STEAM_CLOUD_KEYS"))
+	a := 1
+	if strings.EqualFold(k, "return") {
+		a = 0
 	}
 	select {
 	case s.cmds <- x11Cmd{kind: cmdDismissSteamCloud, a: a}:
@@ -929,7 +1177,7 @@ func (s *InputSender) TryDismissSteamCloudDialog() bool {
 	select {
 	case r := <-s.steamDismissChan:
 		return r
-	case <-time.After(600 * time.Millisecond):
+	case <-time.After(3200 * time.Millisecond):
 		return false
 	}
 }

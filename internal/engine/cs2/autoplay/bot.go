@@ -174,6 +174,8 @@ type CS2Bot struct {
 	// Mid-match map rotation (DM): last map we adapted to; when GSI name changes, wait for pawn again.
 	sessionMapName string
 	mapReloadSince time.Time
+	// Редкий Enter при ожидании спавна (см. spawnEnterInterval); сброс при смене карты.
+	lastSpawnEnterAt time.Time
 
 	// Optional: SFARM_CS2_MEM_CONFIG — world pose / velocity from process memory (Linux).
 	memDriver             cs2MemDriver
@@ -433,6 +435,7 @@ func (b *CS2Bot) maybeDetectMidMatchMapChangeLocked(prev, state *GSIState) {
 		b.display, b.sessionMapName, cur)
 	b.phase = PhaseWaitMapLoad
 	b.mapReloadSince = time.Now()
+	b.lastSpawnEnterAt = time.Now()
 	b.resetBehaviorStateForNewMapLocked()
 }
 
@@ -1044,6 +1047,7 @@ func (b *CS2Bot) waitForMatch(ctx context.Context) bool {
 // waitForPlayablePawn (5b) после известной карты: до 2 min прогрузка / выбор стороны / конец заморозки, затем автоплей.
 func (b *CS2Bot) waitForPlayablePawn(ctx context.Context) bool {
 	b.setPhase(PhaseWaitMapLoad)
+	b.lastSpawnEnterAt = time.Now()
 	log.Printf("[CS2Bot:%d] Phase 5b: load + team + controllable pawn (max 2m, radar scan logic after)...", b.display)
 
 	deadline := time.Now().Add(2 * time.Minute)
@@ -1080,9 +1084,23 @@ func (b *CS2Bot) waitForPlayablePawn(ctx context.Context) bool {
 				return true
 			}
 
-			b.input.KeyTap(KeyReturn)
+			// Не спамим Enter — ломает выбор команды / наблюдатели. Только GSI/console; опционально редкий Enter: SFARM_CS2_SPAWN_ENTER_INTERVAL_MS
+			b.maybeDismissSpawnScreenEnter()
 		}
 	}
+}
+
+func (b *CS2Bot) maybeDismissSpawnScreenEnter() {
+	iv := spawnEnterInterval()
+	if iv <= 0 {
+		return
+	}
+	now := time.Now()
+	if now.Sub(b.lastSpawnEnterAt) < iv {
+		return
+	}
+	b.input.KeyTap(KeyReturn)
+	b.lastSpawnEnterAt = now
 }
 
 func (b *CS2Bot) setPhase(p BotPhase) {
@@ -1575,15 +1593,21 @@ func cs2PIDsLinux() []string {
 
 // ─────────────────────── tick loop ───────────────────────
 
+// periodicSteamModalSafeFocus: не вызывать периодический FocusGame(CS2), пока типичны модалки Steam поверх клиента.
+// Иначе XSetInputFocus(CS2) забирает фокус с «Cloud Out of Date» раньше, чем maybeDismissSteamDialogs успевает нажать Enter.
+func periodicSteamModalSafeFocus(phase BotPhase) bool {
+	switch phase {
+	case PhaseWaitProcess, PhaseWaitWindow, PhaseWaitMatch:
+		return false
+	default:
+		return true
+	}
+}
+
 func (b *CS2Bot) tick(ctx context.Context) {
 	b.tickCount++
 	if ctx.Err() != nil {
 		return
-	}
-
-	if time.Since(b.lastFocus) > focusRefreshInterval() {
-		b.input.FocusGame()
-		b.lastFocus = time.Now()
 	}
 
 	b.mu.Lock()
@@ -1591,13 +1615,18 @@ func (b *CS2Bot) tick(ctx context.Context) {
 	phase := b.phase
 	b.mu.Unlock()
 
-	// Steam Cloud / CS2 Disconnected — закрываем; при «Disconnected» — повторная очередь (steam_dialog_linux.go).
+	// Сначала Steam Cloud / Disconnected — до FocusGame; иначе фокус уходит на CS2 и клавиши уходят не в модалку.
 	if maybeDismissSteamDialogs(b.input, b.display, &b.lastSteamDialogDismissAt) {
 		select {
 		case b.rematchCh <- struct{}{}:
 			log.Printf("[CS2Bot:%d] Connection/CS2 dialog dismissed — scheduling matchmaking re-queue", b.display)
 		default:
 		}
+	}
+
+	if periodicSteamModalSafeFocus(phase) && time.Since(b.lastFocus) > focusRefreshInterval() {
+		b.input.FocusGame()
+		b.lastFocus = time.Now()
 	}
 
 	// Память: каждый тик бота — драйвер process_vm_readv + sigscan с первого же опроса (не ждём autoplay live).
@@ -1718,6 +1747,16 @@ const mapReloadMaxWait = 2 * time.Minute
 // tickMapReload: after GSI reports a new map name, wait until the pawn is playable again (same as initial 5b), then re-pick behavior.
 func (b *CS2Bot) tickMapReload(ctx context.Context) {
 	b.releaseAll()
+	sig := b.checkConsoleLog()
+	if sig == "spawned" || sig == "round_start" {
+		b.mu.Lock()
+		g := b.lastGSI
+		b.mu.Unlock()
+		log.Printf("[CS2Bot:%d] Map reload: console %s — completing", b.display, sig)
+		b.completeMapReload(ctx, g)
+		return
+	}
+
 	b.mu.Lock()
 	g := b.lastGSI
 	since := b.mapReloadSince
@@ -1733,9 +1772,7 @@ func (b *CS2Bot) tickMapReload(ctx context.Context) {
 		b.completeMapReload(ctx, g)
 		return
 	}
-	if b.tickCount%20 == 0 {
-		b.input.KeyTap(KeyReturn)
-	}
+	b.maybeDismissSpawnScreenEnter()
 }
 
 func (b *CS2Bot) completeMapReload(ctx context.Context, g *GSIState) {

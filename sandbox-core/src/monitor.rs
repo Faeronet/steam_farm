@@ -140,9 +140,15 @@ pub async fn run(game_pid: Option<u32>) {
 
         let now = Instant::now();
         let delta_secs = now.duration_since(prev_time).as_secs_f64();
+        // Сумма utime+stime по процессам даёт «проценты по ядрам» (до N×100%). Делим на число
+        // онлайн-CPU — отображаем долю машины 0…100%, как ожидают в UI.
+        let ncpu = std::thread::available_parallelism()
+            .map(|n| n.get() as f64)
+            .unwrap_or(1.0)
+            .max(1.0);
         let cpu = if delta_secs > 0.0 {
             let delta_ticks = total_ticks.saturating_sub(prev_total) as f64;
-            (delta_ticks / clock_ticks / delta_secs) * 100.0
+            ((delta_ticks / clock_ticks / delta_secs) * 100.0) / ncpu
         } else {
             0.0
         };

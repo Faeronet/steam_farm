@@ -4,6 +4,7 @@ mod proc_kill;
 mod process;
 mod sandbox;
 mod steam;
+mod steam_cloud_vdf;
 
 use clap::{Parser, Subcommand};
 
@@ -28,6 +29,13 @@ enum Commands {
     },
     /// List all running sandboxes
     Status,
+    /// Patch Steam localconfig.vdf: set CloudEnabled=0 for app-id under HOME (userdata/*/config)
+    PatchSteamCloud {
+        #[arg(long)]
+        home: std::path::PathBuf,
+        #[arg(long)]
+        app_id: u32,
+    },
 }
 
 #[tokio::main]
@@ -58,6 +66,12 @@ async fn main() {
         }
         Commands::Status => {
             sandbox::status();
+        }
+        Commands::PatchSteamCloud { home, app_id } => {
+            if let Err(e) = steam_cloud_vdf::patch_all_userdata_cloud(&home, app_id) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
         }
     }
 }

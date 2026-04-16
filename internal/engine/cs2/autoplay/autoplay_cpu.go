@@ -2,6 +2,7 @@ package autoplay
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -57,4 +58,18 @@ func focusRefreshInterval() time.Duration {
 		return 10 * time.Second
 	}
 	return 5 * time.Second
+}
+
+// SFARM_CS2_SPAWN_ENTER_INTERVAL_MS: редкий Enter при ожидании спавна после смены карты / 5b (0 = не жать).
+// Частые Enter ломают выбор команды / ведут в наблюдатели.
+func spawnEnterInterval() time.Duration {
+	s := strings.TrimSpace(os.Getenv("SFARM_CS2_SPAWN_ENTER_INTERVAL_MS"))
+	if s == "" || s == "0" {
+		return 0
+	}
+	ms, err := strconv.Atoi(s)
+	if err != nil || ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }

@@ -709,7 +709,8 @@ func pidBelongsToSandboxAccount(pid int, accountID int64) bool {
 		environPath := filepath.Join("/proc", strconv.Itoa(p), "environ")
 		data, err := os.ReadFile(environPath)
 		if err == nil {
-			if bytes.Contains(data, []byte(fmt.Sprintf("SFARM_DISPLAY=%d\x00", accountID))) || bytes.Contains(data, []byte(needle)) {
+			// SFARM_DISPLAY — номер X-дисплея (как в sandbox), не id аккаунта; привязка по каталогу sfarm-{id}.
+			if bytes.Contains(data, []byte(needle)) {
 				return true
 			}
 		}

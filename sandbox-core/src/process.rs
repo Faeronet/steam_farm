@@ -79,8 +79,9 @@ fn snap_steam_available() -> bool {
 }
 
 /// MIT-MAGIC-COOKIE для Xvfb: у snap Steam свой mount namespace, сокет в `/tmp/.X11-unix` часто недоступен,
-/// клиент ходит на `127.0.0.1:6000+N` — без cookie libX11: «Authorization required, but no authorization protocol specified».
-/// Файл кладём в `sandbox_home/.Xauthority` (тот же путь, что `HOME` у Steam в песочнице).
+/// клиент идёт по TCP — libX11 ищет cookie для **имени**, с которым открыт дисплей (`localhost:N`, `127.0.0.1:N`),
+/// а не только для `:N`; иначе «Authorization required, but no authorization protocol specified».
+/// Один и тот же `mcookie` добавляем под несколькими именами; файл — в `sandbox_home/.Xauthority`.
 fn try_prepare_xauthority(base: &std::path::Path, display_num: u16, sandbox_id: u64) -> Option<PathBuf> {
     let home = base.join("home");
     if let Err(e) = std::fs::create_dir_all(&home) {
@@ -91,18 +92,35 @@ fn try_prepare_xauthority(base: &std::path::Path, display_num: u16, sandbox_id: 
         return None;
     }
     let auth = home.join(".Xauthority");
-    let _ = std::fs::remove_file(&auth);
-    let disp = format!(":{}", display_num as u32);
-    let sh = format!(
-        "xauth -f '{}' add '{}' MIT-MAGIC-COOKIE-1 \"$(mcookie)\"",
-        auth.display(),
-        disp
-    );
-    match std::process::Command::new("sh").arg("-c").arg(&sh).status() {
+    let n = display_num.to_string();
+    let status = std::process::Command::new("sh")
+        .env("SFARM_XAUTH", &auth)
+        .env("SFARM_DISP", &n)
+        .arg("-c")
+        .arg(
+            r#"set -e
+COOKIE="$(mcookie)"
+rm -f "$SFARM_XAUTH"
+touch "$SFARM_XAUTH"
+N="$SFARM_DISP"
+# Одна и та же копия MIT-MAGIC-COOKIE под разными ключами (unix vs TCP / разные имена хоста).
+for name in ":$N" "localhost:$N" "127.0.0.1:$N"; do
+  xauth -f "$SFARM_XAUTH" -q add "$name" MIT-MAGIC-COOKIE-1 "$COOKIE"
+done
+if H="$(hostname 2>/dev/null)"; [ -n "$H" ]; then
+  xauth -f "$SFARM_XAUTH" -q add "${H}:$N" MIT-MAGIC-COOKIE-1 "$COOKIE" || true
+fi
+if HF="$(hostname -f 2>/dev/null)"; [ -n "$HF" ] && [ "$HF" != "$(hostname 2>/dev/null)" ]; then
+  xauth -f "$SFARM_XAUTH" -q add "${HF}:$N" MIT-MAGIC-COOKIE-1 "$COOKIE" || true
+fi
+"#,
+        )
+        .status();
+    match status {
         Ok(s) if s.success() => {
             eprintln!(
-                "[sandbox-{}] X11 cookie for {} (TCP + snap clients need this)",
-                sandbox_id, disp
+                "[sandbox-{}] X11 cookie for :{} (+localhost/TCP aliases; snap Steam)",
+                sandbox_id, n
             );
             Some(auth)
         }
